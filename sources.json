@@ -1,0 +1,141 @@
+{
+  "gsb": {
+    "enabled": true,
+    "url": "",
+    "anchor": "",
+    "regex": "(?P<first>\\d{7}).*?(?P<last3>\\d{3}).*?(?P<last2>\\d{2})",
+    "date_regex": "งวดวันที่\\s*(?P<d>\\d{1,2})\\s*(?P<mon>[ก-๙]+)\\s*(?P<y>\\d{4})",
+    "note": "ธ.ก.ส.: parser gsb อ่านตามป้าย 'รางวัลที่ 1' / 'เลขท้าย 4,3,2 ตัว' และข้ามส่วนสลากดิจิทัล — ตัวอ่านทดสอบกับข้อความจำลองที่เรียงตามที่เครื่องมืออ่านเว็บสรุปมา ไม่ใช่ HTML จริง; ช่วงเวลา schedule เป็นค่าประมาณ ตรวจวัน/เวลาออกผลจริงเอง; ถ้าป้ายบนหน้าจริงต่างไป ปรับ labels ได้",
+    "parser": "gsb",
+    "quorum": 1,
+    "sources": [
+      {
+        "name": "ธ.ก.ส. (ทางการ)",
+        "url": "https://www.baac.or.th/lottery-results"
+      }
+    ],
+    "schedule": {
+      "days": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "from": "09:30",
+      "to": "12:00"
+    },
+    "poll_seconds": 60
+  },
+  "lao": {
+    "enabled": false,
+    "url": "",
+    "anchor": "",
+    "regex": "(?P<n4>\\d{4})",
+    "date_regex": "(?P<d>\\d{1,2})/(?P<m>\\d{1,2})/(?P<y>\\d{4})",
+    "note": "หวยลาว: ใช้ kapook (หน้า HTML ธรรมดา แสดงเลข 6 หลัก + ท้าย 4/3/2) ด้วย backfill แบบระบุวันที่: python bot.py backfill lao --days 3 (ใส่ cron ก็ได้) — หน้า 'ล่าสุด' ระบุวันที่ไม่ได้ จึงไม่ใช้กับ fetch/watch; ตัวอย่างโครงหน้าที่ผมเห็นผ่านเครื่องมืออ่านเว็บเท่านั้น ยังไม่เคยรันบอทจริง",
+    "parser": "lao",
+    "quorum": 1,
+    "sources": [
+      {
+        "name": "kapook",
+        "url": "https://lottery.kapook.com/laolottery"
+      }
+    ],
+    "schedule": {
+      "days": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "from": "20:00",
+      "to": "21:30"
+    },
+    "poll_seconds": 45,
+    "exclude": [],
+    "history_url": "https://lottery.kapook.com/laolottery/{dd}{mm}{byyyy}",
+    "date_style": "th"
+  },
+  "hanoi": {
+    "enabled": false,
+    "url": "",
+    "anchor": "",
+    "regex": "(?P<special>\\d{5}).*?(?P<first>\\d{5})",
+    "date_regex": "(?P<d>\\d{1,2})/(?P<m>\\d{1,2})/(?P<y>\\d{4})",
+    "note": "ฮานอย: ใช้ backfill แบบระบุวันที่ (python bot.py backfill hanoi --days 3) แทน fetch เพราะตรวจวันที่ในหน้าอย่างเข้มงวด กันหน้าเด้งไปงวดอื่นแล้วติดป้ายวันที่ผิด — หวยฮานอย (XSMB): ใช้ parser xsmb อ่านผล 27 ตัวตามรูปแบบหลัก (ĐB5|G1 5|G2 5×2|G3 5×6|G4 4×4|G5 4×6|G6 3×3|G7 2×4) ไม่ต้องเขียน regex — ใส่ url ใน sources (ใส่ 2 แหล่งแล้วตั้ง quorum 2 เพื่อกันผิด) แล้วเปลี่ยน enabled เป็น true; ช่วงเวลา schedule เป็นเวลาไทย ตรวจกับเว็บที่เลือกเอง | Minh Ngọc: หน้าเป็น HTML ธรรมดา ผลอยู่ในตารางตรง ๆ (ตรวจผ่านเครื่องมืออ่านหน้าเว็บของผม ไม่ใช่การรันบอทจริง)",
+    "parser": "xsmb",
+    "quorum": 1,
+    "sources": [
+      {
+        "name": "Minh Ngọc",
+        "url": "https://www.xosominhngoc.com/ket-qua-xo-so/mien-bac.html"
+      },
+      {
+        "name": "แหล่ง B (ยืนยัน — เพิ่มเองแล้วตั้ง quorum 2)",
+        "url": ""
+      }
+    ],
+    "schedule": {
+      "days": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ],
+      "from": "18:10",
+      "to": "19:00"
+    },
+    "poll_seconds": 45,
+    "exclude": [],
+    "history_url": "https://www.xosominhngoc.com/ket-qua-xo-so/mien-bac/{dd}-{mm}-{yyyy}.html",
+    "date_style": "num"
+  },
+  "my": {
+    "enabled": false,
+    "url": "",
+    "anchor": "",
+    "date_regex": "",
+    "note": "หวยมาเลย์ 4D: parser 4d หาเลข 4 หลัก 23 ตัวต่อเนื่อง (ที่ 1-3, Special 10, Consolation 10) — 1 แหล่งต่อ 1 บริษัท (Magnum/Da Ma Cai/Sports Toto) อย่าผสมบริษัทใน quorum เดียวกันเพราะเลขคนละชุด; schedule ตั้งตามวันออกของบริษัทที่เลือก (ค่าเริ่มต้น พุธ/เสาร์/อาทิตย์ — ตรวจเอง) | Magnum: หน้าเว็บโหลดเลขด้วย JavaScript (ตอนอ่านแบบไม่รัน JS เห็นเป็น ? ) จึงตั้ง render=browser — ต้องติดตั้ง playwright ก่อนเปิด enabled; Da Ma Cai/Sports Toto ผมยังไม่ได้ตรวจหน้า | Da Ma Cai (หน้า /zh/past-draw-result/): ตัวเลขไม่อยู่ในข้อความของหน้า (เป็นช่องว่าง/รูปภาพ) จึงยังอ่านไม่ได้ — ถ้าจะลองให้ย้ายรายการจาก alt_sources_unverified ไปไว้ใน sources แทน Magnum (ใช้ทีละบริษัทเท่านั้น) แล้วรัน probe ดูข้อความที่เรนเดอร์",
+    "parser": "4d",
+    "quorum": 1,
+    "sources": [
+      {
+        "name": "Magnum 4D",
+        "url": "https://www.magnum4d.my/results/draw-results",
+        "render": "browser"
+      }
+    ],
+    "schedule": {
+      "days": [
+        2,
+        5,
+        6
+      ],
+      "from": "18:00",
+      "to": "19:30"
+    },
+    "poll_seconds": 45,
+    "exclude": [],
+    "alt_sources_unverified": [
+      {
+        "name": "Da Ma Cai",
+        "url": "https://www.damacai.com.my/zh/past-draw-result/",
+        "render": "browser"
+      }
+    ]
+  },
+  "yeekee": {
+    "enabled": false,
+    "url": "",
+    "note": "ยี่กีไม่มีแหล่งกลางที่เชื่อถือได้ (แต่ละผู้ให้บริการสร้างผลของตัวเอง) — ใช้คำสั่ง: python bot.py add yeekee --top3 123 --bottom2 45 --round 7"
+  }
+}
