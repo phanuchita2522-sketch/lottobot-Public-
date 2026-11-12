@@ -1,0 +1,70 @@
+name: lottobot
+
+on:
+  schedule:
+    - cron: "*/20 8-12 1-3,16-18 * *"
+    - cron: "20,35,50 11 * * *"
+    - cron: "10 12-15 * * *"
+    - cron: "0 3-9 16-17 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: lottobot
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.commit.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Fetch results
+        continue-on-error: true
+        run: python bot.py fetch --out site
+        env:
+          THAI_FALLBACK_BASE: ${{ vars.THAI_FALLBACK_BASE }}
+      - name: Hanoi (by date)
+        continue-on-error: true
+        run: python bot.py backfill hanoi --days 3 --out site
+      - name: Lao (by date)
+        continue-on-error: true
+        run: python bot.py backfill lao --days 3 --out site
+      - name: Commit changes
+        id: commit
+        if: always()
+        run: |
+          git config user.name "lottobot"
+          git config user.email "lottobot@users.noreply.github.com"
+          git add site
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            git commit -m "update results"
+            git push
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy:
+    needs: update
+    if: always() && needs.update.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@v4
