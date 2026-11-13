@@ -300,10 +300,19 @@ def build_lao(n4):
             G("l2", "2 ตัวบน", "last", [n4[2:]]), G("l2b", "2 ตัวล่าง", "first", [n4[:2]])]
 
 
-def build_hanoi(special, first):
+def build_hanoi(special, first, tiers=None):
+    """3 ตัวบน/2 ตัวบน/2 ตัวล่าง (แบบที่คนไทยเล่น) + ถ้ามีข้อมูลครบ ใส่รางวัลทางการทั้ง 8 ระดับของ XSMB ต่อท้าย
+    tiers = dict จาก scrapers.parse_xsmb; ทุกระดับตรวจแบบ 'ตรงท้าย' ตามความยาวเลขของระดับนั้น (สลากเวียดนามมี 5 หลัก)"""
     special, first = _digits(special, 5, "รางวัลพิเศษ"), _digits(first, 5, "รางวัลที่ 1")
-    return [G("h3", "3 ตัวบน", "last", [special[-3:]]), G("h2", "2 ตัวบน", "last", [special[-2:]]),
-            G("h2b", "2 ตัวล่าง", "full", [first[-2:]])]
+    out = [G("h3", "3 ตัวบน", "last", [special[-3:]]), G("h2", "2 ตัวบน", "last", [special[-2:]]),
+           G("h2b", "2 ตัวล่าง", "full", [first[-2:]])]
+    if tiers:
+        names = [("db", "ทางการ · รางวัลพิเศษ"), ("g1", "ทางการ · รางวัลที่ 1"), ("g2", "ทางการ · รางวัลที่ 2"), ("g3", "ทางการ · รางวัลที่ 3"),
+                 ("g4", "ทางการ · รางวัลที่ 4"), ("g5", "ทางการ · รางวัลที่ 5"), ("g6", "ทางการ · รางวัลที่ 6"), ("g7", "ทางการ · รางวัลที่ 7")]
+        for k, nm in names:
+            v = tiers[k]
+            out.append(G("v_" + k, nm, "last", [v] if isinstance(v, str) else list(v)))
+    return out
 
 
 def build_my(nums):
@@ -416,7 +425,7 @@ def source_list(conf):
 def groups_from(lot, parser, conf, text):
     if parser == "xsmb":
         r = scrapers.parse_xsmb(text, conf)
-        return build_hanoi(r["db"], r["g1"])
+        return build_hanoi(r["db"], r["g1"], r)
     if parser == "4d":
         return build_my(scrapers.parse_4d(text, conf))
     if parser == "lao":
@@ -770,8 +779,9 @@ def selftest_scrapers():
         f"<tr><td>{l}</td><td>{n}</td></tr>" for l, n in zip(labels, xs)) + "</table><footer>Hotline 0912345678 © 2026</footer></body></html>"
     r = scrapers.parse_xsmb(strip_tags(html))
     assert r["db"] == "12345" and r["g1"] == "67890" and r["g7"] == ["12", "34", "56", "78"] and len(r["g3"]) == 6, "xsmb"
-    g = build_hanoi(r["db"], r["g1"])
+    g = build_hanoi(r["db"], r["g1"], r)
     assert g[0]["numbers"] == ["345"] and g[1]["numbers"] == ["45"] and g[2]["numbers"] == ["90"], "hanoi build"
+    assert len(g) == 11 and g[-1]["numbers"] == ["12", "34", "56", "78"] and len(g[6]["numbers"]) == 6, "hanoi official tiers"
     rev = "".join(f"<p>{l} {n}</p>" for l, n in list(zip(labels, xs))[::-1])
     assert scrapers.parse_xsmb(strip_tags(rev))["db"] == "12345", "xsmb reversed"
     try:
