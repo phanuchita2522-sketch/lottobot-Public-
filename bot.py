@@ -37,9 +37,9 @@ def log(*a):
 
 
 # ---------------------------------------------------------------- HTTP / utils
-def http(url, data=None, timeout=25, retries=2):
+def http(url, data=None, timeout=25, retries=2, headers=None):
     body = json.dumps(data).encode() if data is not None else None
-    headers = {"User-Agent": UA, "Accept": "*/*"}
+    headers = {"User-Agent": UA, "Accept": "*/*", **(headers or {})}
     if body:
         headers["Content-Type"] = "application/json"
     last = None
@@ -430,10 +430,76 @@ def groups_from(lot, parser, conf, text):
         return build_my(scrapers.parse_4d(text, conf))
     if parser == "lao":
         return build_lao(scrapers.parse_lao(text, conf))
+    if parser == "manycai_baac":
+        return baac_from_manycai(text)
     if parser == "gsb":
         r = scrapers.parse_gsb(text, conf)
         return build_gsb(r["first"][0], r["last3"], r.get("last2"), r.get("last4"))
     return extract_other(lot, conf, text)
+
+
+def jpath(obj, path):
+    """อ่านค่าตาม path แบบ a.b.0.c (ตัวเลข = index ของ list)"""
+    for k in str(path).split("."):
+        if isinstance(obj, list):
+            obj = obj[int(k)]
+        elif isinstance(obj, dict):
+            obj = obj[k]
+        else:
+            raise ValueError(f"path '{path}' ไม่ตรงโครงสร้าง JSON")
+    return obj
+
+
+def json_source(c, now):
+    """คืน (ข้อความที่มีแต่ตัวเลขเรียงตามลำดับรางวัล, ป้ายงวด) — ส่งต่อให้ parser เดียวกับหน้าเว็บ (ตรวจจำนวนหลักซ้ำเสมอ)
+    sources.json: {"url": "...", "headers": {"Authorization": "Bearer ${MANYCAI_KEY}"},
+                   "json": {"numbers": "data.0.openCode", "date": "data.0.issue", "date_format": "%Y-%m-%d"}}
+    ${ENV} ในค่า url/headers แทนด้วย environment variable (เก็บคีย์ใน GitHub Secrets ห้ามใส่ในไฟล์)"""
+    sub = lambda s: re.sub(r"\$\{(\w+)\}", lambda m: os.environ.get(m.group(1)) or (_ for _ in ()).throw(ValueError(f"ไม่ได้ตั้ง environment variable {m.group(1)}")), s)
+    url = sub(c["url"])
+    st, raw = http(url, headers={k: sub(v) for k, v in (c.get("headers") or {}).items()})
+    scrapers.check_block(st, raw if len(raw) < 30000 and not raw.lstrip().startswith(("{", "[")) else "")
+    try:
+        obj = json.loads(raw)
+    except ValueError:
+        raise ValueError("ตอบกลับไม่ใช่ JSON")
+    spec = c["json"]
+    v = jpath(obj, spec["numbers"])
+    if spec.get("raw"):   # ส่งโครงสร้าง JSON ดิบให้ builder เฉพาะชนิด (เช่น manycai_baac)
+        return v, _json_label(obj, spec, now)
+    text = " ".join(map(str, v)) if isinstance(v, list) else str(v)
+    if spec.get("concat"):   # เลขแต่ละหลักคั่นด้วยจุลภาค เช่น "2,1,8,6,5,3" (รูปแบบ TGFC ของ ManyCai) → รวมเป็นเลขชุดเดียว
+        text = re.sub(r"\D", "", text)
+        if spec.get("take_last"):
+            text = text[-int(spec["take_last"]):]
+    else:
+        text = re.sub(r"[^\d]+", " ", text)
+    return text, _json_label(obj, spec, now)
+
+
+def _json_label(obj, spec, now):
+    label = "ดึงเมื่อ " + now.strftime("%d/%m/%Y %H:%M")
+    if spec.get("date"):
+        d = str(jpath(obj, spec["date"]))
+        for fmt in ([spec["date_format"]] if spec.get("date_format") else []) + ["%Y-%m-%d", "%d/%m/%Y", "%Y%m%d", "%Y-%m-%d %H:%M:%S"]:
+            try:
+                label = thai_date(dt.datetime.strptime(d.strip(), fmt).date()); break
+            except ValueError:
+                continue
+    return label
+
+
+def baac_from_manycai(code):
+    """BAAC ของ ManyCai: ใช้เฉพาะฟิลด์ที่ยืนยันแล้วว่าตรงกับหน้าทางการ (งวด 16 ต.ค. 2569):
+    code = รางวัลที่ 1 (7 หลัก), code_last4 = ท้าย 4 ตัว, code_last3 = ท้าย 3 ตัว (2 ชุด)
+    ฟิลด์อื่น (code0, code1..code10) ยังไม่ทราบความหมายที่ยืนยันได้ จึงไม่ใช้ ไม่เดา"""
+    dg = lambda s: re.sub(r"\D", "", str(s))
+    first = dg(code["code"])
+    last3 = [dg(x) for x in code["code_last3"]]
+    last4 = dg(code.get("code_last4", ""))
+    if len(first) != 7 or not all(len(x) == 3 for x in last3) or (last4 and len(last4) != 4):
+        raise ValueError("ข้อมูล BAAC จาก ManyCai จำนวนหลักไม่ตรงรูปแบบ (7/3/4) จึงไม่บันทึก")
+    return build_gsb(first, last3, None, last4 or None)
 
 
 def fetch_other(lot, conf, now=None):
@@ -444,14 +510,19 @@ def fetch_other(lot, conf, now=None):
     for s in source_list(conf):
         name = s.get("name") or s.get("url")
         c = {**conf, **s}
+        parser_s = c.get("parser") or parser
         try:
+            if c.get("json"):   # แหล่ง API แบบ JSON (เช่น ManyCai): ดึงเลข/วันที่ตาม path ที่ตั้งใน sources.json
+                text, label = json_source(c, now)
+                seen.append((name, groups_from(lot, parser_s, c, text), label))
+                continue
             if c.get("render") == "browser":
                 raw = scrapers.render_browser(c["url"])
             else:
                 st, raw = http(c["url"])
                 scrapers.check_block(st, raw)
             text = strip_tags(raw)
-            groups = groups_from(lot, parser, c, text)
+            groups = groups_from(lot, parser_s, c, text)
             seen.append((name, groups, draw_label(c, text, now)))
         except scrapers.Blocked as e:
             blocked = True
@@ -762,6 +833,10 @@ def selftest_gsb():
     assert r["first"] == ["9221612"] and r["last4"] == ["3270"] and r["last3"] == ["167", "541"] and "last2" not in r, r
     g = build_gsb(r["first"][0], r["last3"], r.get("last2"), r.get("last4"))
     assert [x["numbers"] for x in g] == [["9221612"], ["3270"], ["167", "541"]], g
+    page2 = ("<h2>งวดประจำวันที่ 16 ตุลาคม 2569</h2><p>9221612</p><span>รางวัลที่ 1</span><p>3270</p><span>รางวัลเลขท้าย 4 ตัว</span>"
+             "<p>167</p><p>541</p><span>รางวัลเลขท้าย 3 ตัว</span><p>866</p><span>รางวัลเลขท้าย 3 ตัว สลากดิจิทัล ธ.ก.ส.</span>")   # รูปแบบหน้าจริง: เลขมาก่อนป้าย
+    r2 = scrapers.parse_gsb(strip_tags(page2))
+    assert r2["first"] == ["9221612"] and r2["last4"] == ["3270"] and r2["last3"] == ["167", "541"], r2
     lab = draw_label({"date_regex": r"งวดวันที่\s*(?P<d>\d{1,2})\s*(?P<mon>[ก-๙]+)\s*(?P<y>\d{4})"}, strip_tags(page), dt.datetime.now(ICT))
     assert "16" in lab and "2026" in lab or "2569" in lab, lab
     try:
@@ -866,6 +941,17 @@ def cmd_selftest(_):
         assert not write_json(Path(t) / "latest", json.loads((Path(t) / "latest").read_text(encoding="utf-8"))), "ไม่เขียนซ้ำ"
     selftest_scrapers()
     selftest_gsb()
+    g = baac_from_manycai({"code": "9,2,2,1,6,1,2", "code_last4": "3,2,7,0", "code_last3": ["1,6,7", "5,4,1"], "code3": ["0,3,5,9,6,4,9"]})
+    assert [x["numbers"] for x in g] == [["9221612"], ["3270"], ["167", "541"]], g
+    try:
+        baac_from_manycai({"code": "9,2,2", "code_last3": ["1,6,7"]}); raise AssertionError("ต้องล้มเหลว")
+    except ValueError:
+        pass
+    obj = {"data": [{"issue": "2026-11-11", "openCode": ",".join(xs_)}]} if (xs_ := ["74129", "97579", "20960", "11980", "13449", "30793", "18746", "86606", "00972", "26471", "1760", "9505", "3676", "7568", "1494", "1478", "5404", "5724", "9888", "5597", "714", "093", "910", "51", "34", "12", "95"]) else {}
+    assert jpath(obj, "data.0.issue") == "2026-11-11"
+    assert jpath([{"code": "2,1,8,6,5,3"}], "0.code") == "2,1,8,6,5,3"
+    txt = re.sub(r"[^\d]+", " ", jpath(obj, "data.0.openCode"))
+    assert scrapers.parse_xsmb(txt)["db"] == "74129" and len(build_hanoi("74129", "97579", scrapers.parse_xsmb(txt))) == 11, "json adapter"
     with tempfile.TemporaryDirectory() as t:
         g = build_lao("4036")
         add_history(t, "lao", g, "1 พฤศจิกายน 2569"); add_history(t, "lao", build_lao("1234"), "3 พฤศจิกายน 2569")

@@ -130,36 +130,49 @@ def anchor_date(text, d, style):
 
 
 GSB_LABELS = {
-    "first": r"รางวัลที่\s*1", "last4": r"ท้าย\s*4\s*ตัว", "last3": r"ท้าย\s*3\s*ตัว", "last2": r"ท้าย\s*2\s*ตัว",
+    "first": r"รางวัลที่\s*1(?!\d)", "last4": r"(?:รางวัล)?(?:เลข)?ท้าย\s*4\s*ตัว", "last3": r"(?:รางวัล)?(?:เลข)?ท้าย\s*3\s*ตัว",
+    "last2": r"(?:รางวัล)?(?:เลข)?ท้าย\s*2\s*ตัว",
 }
 GSB_SKIP = r"ดิจิทัล|ดิจิตอล|digital"   # สลากดิจิทัลมีรางวัลของตัวเอง ไม่ปนกับสลากปกติ
 GSB_LEN = {"first": 7, "last4": 4, "last3": 3, "last2": 2}
 
 
 def parse_gsb(text, conf=None):
-    """สลากออมทรัพย์ ธ.ก.ส.: อ่านตัวเลขตาม 'ป้ายรางวัล' (รางวัลที่ 1 / เลขท้าย 4,3,2 ตัว) — ข้ามส่วนสลากดิจิทัล
-    บังคับต้องพบรางวัลที่ 1 (7 หลัก) และเลขท้าย 3 ตัว; ท้าย 4 / ท้าย 2 มีหรือไม่มีก็ได้ (หน้าเว็บบางงวดไม่แสดง)"""
+    """สลากออมทรัพย์ ธ.ก.ส.: อ่านตัวเลขตาม 'ป้ายรางวัล' — หน้าจริงวางเลข "ก่อน" ป้าย (9221612 รางวัลที่ 1) จึงลองแบบเลขก่อนป้ายก่อน แล้วค่อยเลขหลังป้าย
+    ข้ามป้ายที่ตามด้วยคำว่าสลากดิจิทัล; บังคับต้องพบรางวัลที่ 1 (7 หลัก) และเลขท้าย 3 ตัว; ท้าย 4 / ท้าย 2 มีหรือไม่มีก็ได้"""
     conf = conf or {}
     t = clean(text, conf)
     labels = {**GSB_LABELS, **(conf.get("labels") or {})}
-    marks = []
+    skip = conf.get("skip") or GSB_SKIP
+    marks = []   # (start, end, key, digital_follows)
     for key, pat in labels.items():
         for m in re.finditer(pat, t, re.I):
-            marks.append((m.start(), m.end(), key))
-    for m in re.finditer(conf.get("skip") or GSB_SKIP, t, re.I):
-        marks.append((m.start(), m.end(), None))
-    marks.sort()
-    got = {}
-    for i, (_, end, key) in enumerate(marks):
-        if key is None or key in got:
-            continue
-        seg = t[end:marks[i + 1][0] if i + 1 < len(marks) else len(t)]
-        toks = [x for x in re.findall(r"(?<!\d)\d+(?!\d)", seg) if len(x) == GSB_LEN[key]]
-        if key == "first":
-            toks = toks[:1]
-        if toks:
-            got[key] = toks
-    if "first" not in got or "last3" not in got:
+            dig = bool(re.match(r"\s*(?:\S+\s+){0,3}?(?:%s)" % skip, t[m.end():m.end() + 40], re.I))
+            marks.append((m.start(), m.end(), key, dig))
+    for m in re.finditer(skip, t, re.I):
+        marks.append((m.start(), m.end(), None, False))
+    marks.sort(key=lambda x: (x[0], x[1]))
+
+    def run(mode):
+        got = {}
+        for i, (st, end, key, dig) in enumerate(marks):
+            if key is None or dig or key in got:
+                continue
+            if mode == "before":
+                prev = marks[i - 1][1] if i else 0
+                m = re.search(r"((?:\d+\s+)*\d+)\s*(?:รางวัล|เลข)*\s*$", t[prev:st])
+                seg = m.group(1) if m else ""
+            else:
+                seg = t[end:marks[i + 1][0] if i + 1 < len(marks) else len(t)]
+            toks = [x for x in re.findall(r"(?<!\d)\d+(?!\d)", seg) if len(x) == GSB_LEN[key]]
+            if key == "first":
+                toks = toks[-1:] if mode == "before" else toks[:1]
+            if toks:
+                got[key] = toks
+        return got if "first" in got and "last3" in got else None
+
+    got = run("before") or run("after")
+    if not got:
         raise ValueError("ไม่พบรางวัลที่ 1 (7 หลัก) หรือเลขท้าย 3 ตัวตามป้ายรางวัล — รัน probe ดู probe_out แล้วปรับ labels/anchor")
     return got
 
