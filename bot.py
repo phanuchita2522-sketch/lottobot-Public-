@@ -47,9 +47,9 @@ def http(url, data=None, timeout=25, retries=2, headers=None):
         try:
             req = urllib.request.Request(url, data=body, headers=headers)
             with urllib.request.urlopen(req, timeout=timeout) as r:
-                return r.status, r.read().decode(r.headers.get_content_charset() or "utf-8", "replace")
+                return r.status, r.read(8_000_000).decode(r.headers.get_content_charset() or "utf-8", "replace")
         except urllib.error.HTTPError as e:
-            return e.code, e.read().decode("utf-8", "replace")
+            return e.code, e.read(1_000_000).decode("utf-8", "replace")
         except Exception as e:  # timeout, DNS, TLS ...
             last = e
             time.sleep(1.5 * (i + 1))
