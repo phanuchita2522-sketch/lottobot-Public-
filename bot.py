@@ -217,6 +217,11 @@ def fetch_thai_draw(d):
         return normalize_thai(obj, d)
     except ValueError as e:
         log(f"  [{d}] ตอบกลับแล้วแต่ใช้ไม่ได้: {e}")
+        if "ไม่รู้จักรูปแบบ" in str(e):   # วินิจฉัย: แสดงโครงสร้างที่ GLO ตอบมา (เฉพาะชื่อคีย์ + ต้นข้อความ) เพื่อปรับตัวอ่านให้ตรง
+            r = obj.get("response", obj) if isinstance(obj, dict) else obj
+            log("    โครงสร้าง:", list(obj)[:15] if isinstance(obj, dict) else type(obj).__name__,
+                "| response:", list(r)[:20] if isinstance(r, dict) else type(r).__name__)
+            log("    ต้นข้อความ:", text[:600].replace("\n", " "))
         return None
 
 
