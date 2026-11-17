@@ -1,34 +1,4 @@
 {
-  "gsb": {
-    "enabled": true,
-    "url": "",
-    "anchor": "",
-    "regex": "(?P<first>\\d{7}).*?(?P<last3>\\d{3}).*?(?P<last2>\\d{2})",
-    "date_regex": "งวดวันที่\\s*(?P<d>\\d{1,2})\\s*(?P<mon>[ก-๙]+)\\s*(?P<y>\\d{4})",
-    "note": "ธ.ก.ส.: parser gsb อ่านตามป้าย 'รางวัลที่ 1' / 'เลขท้าย 4,3,2 ตัว' และข้ามส่วนสลากดิจิทัล — ตัวอ่านทดสอบกับข้อความจำลองที่เรียงตามที่เครื่องมืออ่านเว็บสรุปมา ไม่ใช่ HTML จริง; ช่วงเวลา schedule เป็นค่าประมาณ ตรวจวัน/เวลาออกผลจริงเอง; ถ้าป้ายบนหน้าจริงต่างไป ปรับ labels ได้",
-    "parser": "gsb",
-    "quorum": 1,
-    "sources": [
-      {
-        "name": "ธ.ก.ส. (ทางการ)",
-        "url": "https://www.baac.or.th/lottery-results"
-      }
-    ],
-    "schedule": {
-      "days": [
-        0,
-        1,
-        2,
-        3,
-        4,
-        5,
-        6
-      ],
-      "from": "09:30",
-      "to": "12:00"
-    },
-    "poll_seconds": 60
-  },
   "lao": {
     "enabled": false,
     "url": "",
@@ -137,5 +107,23 @@
     "enabled": false,
     "url": "",
     "note": "ยี่กีไม่มีแหล่งกลางที่เชื่อถือได้ (แต่ละผู้ให้บริการสร้างผลของตัวเอง) — ใช้คำสั่ง: python bot.py add yeekee --top3 123 --bottom2 45 --round 7"
+  },
+  "_example_json_source": {
+    "หมายเหตุ": "รูปแบบตามเอกสาร ManyCai (th.manycai.com/index/apilist): ตอบเป็น JSON array [{issue, opendate, code, lotterycode}] โดย code คั่นด้วยจุลภาค ตัวอย่างหวยไทยคือ \"2,1,8,6,5,3\" (ทีละหลัก) — ยังไม่ทราบ code ของ YNHN/TLZC/YNMA/BAAC จนกว่าจะเห็นข้อมูลจริง จึงยังไม่เปิดใช้ ห้ามเปิดใช้ก่อนอ่านเรื่องเงื่อนไขการใช้ข้อมูลใน README",
+    "name": "ManyCai",
+    "url": "http://free.jiangyuan365.com/${MANYCAI_KEY}/YNHN-1.json",
+    "json": {
+      "numbers": "0.code",
+      "date": "0.opendate",
+      "date_format": "%Y-%m-%d %H:%M:%S"
+    },
+    "ถ้า code เป็นเลขทีละหลัก (เช่นลาว)": {
+      "json": {
+        "numbers": "0.code",
+        "concat": true,
+        "take_last": 4,
+        "date": "0.opendate"
+      }
+    }
   }
 }

@@ -8,7 +8,7 @@
   site/latest            หวยไทยงวดล่าสุด   (รูปแบบเดียวกับ rayriffy ที่แอปรองรับ)
   site/list/1 2 3 …      รายการงวด (หน้าละ 10)
   site/lotto/<YYYY-MM-DD>  ผลแต่ละงวด
-  site/other/<lot>       ผลล่าสุดของ gsb | lao | hanoi | my | yeekee
+  site/other/<lot>       ผลล่าสุดของ lao | hanoi | my | yeekee
 
 คำสั่ง:  fetch | probe | add | selftest | serve     (ดู README.md)
 """
@@ -24,7 +24,7 @@ ICT = dt.timezone(dt.timedelta(hours=7))
 TH_MONTHS = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน",
              "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
 GLO_URL = "https://www.glo.or.th/api/checking/getLotteryResult"
-OTHERS = ["gsb", "lao", "hanoi", "my", "yeekee"]
+OTHERS = ["lao", "hanoi", "my", "yeekee"]
 ISO_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
@@ -121,6 +121,8 @@ def normalize_thai(obj, d):
     r = obj.get("response", obj) if isinstance(obj, dict) else None
     if not isinstance(r, dict):
         raise ValueError("ไม่ใช่ JSON object")
+    if isinstance(r.get("result"), dict) and isinstance(r["result"].get("data"), dict):
+        r = r["result"]   # GLO รูปแบบปัจจุบัน (พ.ย. 2569): response.result.data.{first,second,...} (ตรวจจาก log จริง)
     prizes, running = [], []
     if isinstance(r.get("prizes"), list):
         for p in r["prizes"]:
@@ -341,21 +343,6 @@ def build_yeekee(top3, bottom2):
     return [G("y3", "3 ตัวบน", "full", [top3]), G("y2", "2 ตัวบน", "full", [top3[-2:]]), G("y2b", "2 ตัวล่าง", "full", [bottom2])]
 
 
-def build_gsb(first, last3, last2=None, last4=None):
-    """last3/last2/last4 รับเลขเดียวหรือรายการ (ธ.ก.ส. มีเลขท้าย 3 ตัวหลายชุด) — last2/last4 เว้นได้ถ้าหน้าเว็บไม่แสดง"""
-    first = str(first).strip()
-    if not first.isdigit():
-        raise ValueError("รางวัลที่ 1 ต้องเป็นตัวเลข")
-    lst = lambda v: [v] if isinstance(v, str) else list(v or [])
-    out = [G("g1", "รางวัลที่ 1", "full", [first])]
-    if last4:
-        out.append(G("g4", "เลขท้าย 4 ตัว", "last", [_digits(x, 4, "ท้าย 4") for x in lst(last4)]))
-    out.append(G("g3", "เลขท้าย 3 ตัว", "last", [_digits(x, 3, "ท้าย 3") for x in lst(last3)]))
-    if last2:
-        out.append(G("g2", "เลขท้าย 2 ตัว", "last", [_digits(x, 2, "ท้าย 2") for x in lst(last2)]))
-    return out
-
-
 def make_other(lot, groups, label):
     return {"lottery": lot, "date": label, "groups": groups, "source": "bot"}
 
@@ -377,8 +364,6 @@ def extract_other(lot, conf, text):
         return build_lao(g["n4"])
     if lot == "hanoi":
         return build_hanoi(g["special"], g["first"])
-    if lot == "gsb":
-        return build_gsb(g["first"], g["last3"], g["last2"])
     if lot == "yeekee":
         return build_yeekee(g["top3"], g["bottom2"])
     raise ValueError("ไม่รู้จักชนิดหวย " + lot)
@@ -425,7 +410,7 @@ def save_other(out, lot, groups, label):
     return write_json(p, make_other(lot, groups, label))
 
 
-PARSER_DEFAULT = {"hanoi": "xsmb", "my": "4d", "lao": "lao", "gsb": "gsb"}
+PARSER_DEFAULT = {"hanoi": "xsmb", "my": "4d", "lao": "lao"}
 
 
 def source_list(conf):
@@ -443,11 +428,6 @@ def groups_from(lot, parser, conf, text):
     if parser == "lao":
         n6 = scrapers.parse_lao_full(text, conf)
         return build_lao(n6[-4:], n6)
-    if parser == "manycai_baac":
-        return baac_from_manycai(text)
-    if parser == "gsb":
-        r = scrapers.parse_gsb(text, conf)
-        return build_gsb(r["first"][0], r["last3"], r.get("last2"), r.get("last4"))
     return extract_other(lot, conf, text)
 
 
@@ -500,19 +480,6 @@ def _json_label(obj, spec, now):
             except ValueError:
                 continue
     return label
-
-
-def baac_from_manycai(code):
-    """BAAC ของ ManyCai: ใช้เฉพาะฟิลด์ที่ยืนยันแล้วว่าตรงกับหน้าทางการ (งวด 16 ต.ค. 2569):
-    code = รางวัลที่ 1 (7 หลัก), code_last4 = ท้าย 4 ตัว, code_last3 = ท้าย 3 ตัว (2 ชุด)
-    ฟิลด์อื่น (code0, code1..code10) ยังไม่ทราบความหมายที่ยืนยันได้ จึงไม่ใช้ ไม่เดา"""
-    dg = lambda s: re.sub(r"\D", "", str(s))
-    first = dg(code["code"])
-    last3 = [dg(x) for x in code["code_last3"]]
-    last4 = dg(code.get("code_last4", ""))
-    if len(first) != 7 or not all(len(x) == 3 for x in last3) or (last4 and len(last4) != 4):
-        raise ValueError("ข้อมูล BAAC จาก ManyCai จำนวนหลักไม่ตรงรูปแบบ (7/3/4) จึงไม่บันทึก")
-    return build_gsb(first, last3, None, last4 or None)
 
 
 def fetch_other(lot, conf, now=None):
@@ -768,8 +735,7 @@ def cmd_add(a):
         elif lot == "hanoi": groups = build_hanoi(a.special, a.first)
         elif lot == "my": groups = build_my(a.numbers.split())
         elif lot == "yeekee": groups = build_yeekee(a.top3, a.bottom2)
-        elif lot == "gsb": groups = build_gsb(a.first, a.last3, a.last2)
-        else: raise ValueError("ใช้ได้กับ: lao hanoi my yeekee gsb")
+        else: raise ValueError("ใช้ได้กับ: lao hanoi my yeekee")
     except (ValueError, TypeError, AttributeError) as e:
         sys.exit(f"ข้อมูลไม่ครบหรือไม่ถูกต้อง: {e}\nตัวอย่าง: add lao --n4 4036 | add hanoi --special 12345 --first 67890 | add yeekee --top3 123 --bottom2 45")
     d = dt.date.fromisoformat(a.date) if a.date else dt.datetime.now(ICT).date()
@@ -802,7 +768,7 @@ def purge_unverified_lao(out):
 
 def cmd_backfill(a):
     """ดึงผลย้อนหลังจากเว็บที่มีหน้าแยกตามวันที่ — ตั้ง "history_url" ใน sources.json เช่น
-    https://example.com/xsmb/{dd}-{mm}-{yyyy}.html   (ใช้ได้กับชนิดที่มี parser: hanoi/my/lao/gsb)
+    https://example.com/xsmb/{dd}-{mm}-{yyyy}.html   (ใช้ได้กับชนิดที่มี parser: hanoi/my/lao)
     ดึงช้า ๆ (หน่วง --delay วินาทีต่อหน้า) เพื่อไม่รบกวนเว็บ; วันที่ไม่มีผล/อ่านไม่ได้จะข้ามและรายงานท้ายงาน"""
     lot, conf = a.lottery, (load_cfg(a.config).get(a.lottery) or {})
     tpl = conf.get("history_url")
@@ -861,24 +827,9 @@ def cmd_serve(a):
     http.server.ThreadingHTTPServer(("", a.port), functools.partial(H, directory=a.out)).serve_forever()
 
 
-def selftest_gsb():
-    page = ("<h2>ตรวจผลรางวัลสลาก ธ.ก.ส. งวดวันที่ 16 ตุลาคม 2569</h2><div>รางวัลที่ 1</div><div>9221612</div>"
-            "<div>เลขท้าย 4 ตัว</div><div>3270</div><div>เลขท้าย 3 ตัว</div><div>167</div><div>541</div>"
-            "<div>สลากดิจิทัล ธ.ก.ส. เลขท้าย 3 ตัว</div><div>866</div><div>โทร 02-555-0555</div>")
-    r = scrapers.parse_gsb(strip_tags(page))
-    assert r["first"] == ["9221612"] and r["last4"] == ["3270"] and r["last3"] == ["167", "541"] and "last2" not in r, r
-    g = build_gsb(r["first"][0], r["last3"], r.get("last2"), r.get("last4"))
-    assert [x["numbers"] for x in g] == [["9221612"], ["3270"], ["167", "541"]], g
-    page2 = ("<h2>งวดประจำวันที่ 16 ตุลาคม 2569</h2><p>9221612</p><span>รางวัลที่ 1</span><p>3270</p><span>รางวัลเลขท้าย 4 ตัว</span>"
-             "<p>167</p><p>541</p><span>รางวัลเลขท้าย 3 ตัว</span><p>866</p><span>รางวัลเลขท้าย 3 ตัว สลากดิจิทัล ธ.ก.ส.</span>")   # รูปแบบหน้าจริง: เลขมาก่อนป้าย
-    r2 = scrapers.parse_gsb(strip_tags(page2))
-    assert r2["first"] == ["9221612"] and r2["last4"] == ["3270"] and r2["last3"] == ["167", "541"], r2
-    lab = draw_label({"date_regex": r"งวดวันที่\s*(?P<d>\d{1,2})\s*(?P<mon>[ก-๙]+)\s*(?P<y>\d{4})"}, strip_tags(page), dt.datetime.now(ICT))
-    assert "16" in lab and "2026" in lab or "2569" in lab, lab
-    try:
-        scrapers.parse_gsb(strip_tags("<p>ไม่มีผล</p>")); raise AssertionError("ต้องล้มเหลว")
-    except ValueError:
-        pass
+def selftest_label():
+    lab = draw_label({"date_regex": r"งวดวันที่\s*(?P<d>\d{1,2})\s*(?P<mon>[ก-๙]+)\s*(?P<y>\d{4})"}, strip_tags("<h2>งวดวันที่ 16 ตุลาคม 2569</h2>"), dt.datetime.now(ICT))
+    assert "16" in lab and ("2026" in lab or "2569" in lab), lab
 
 
 def selftest_scrapers():
@@ -942,6 +893,8 @@ def cmd_selftest(_):
         "last3b": {"price": "4000", "number": [{"round": 1, "value": "333"}, {"round": 2, "value": "444"}]},
         "last2": {"price": "2000", "number": [{"round": 1, "value": "56"}]}}}}
     d = dt.date(2026, 11, 1)
+    nested = {"statusCode": 200, "response": {"responseStatus": {"status": "Success"}, "result": {"date": "2026-11-01", "status": 1, "data": glo_style["response"]["data"]}}}
+    assert normalize_thai(nested, d) == normalize_thai(glo_style, d), "GLO result.data"
     r = normalize_thai(glo_style, d)["response"]
     assert r["date"] == "1 พฤศจิกายน 2569" and r["prizes"][0]["number"] == ["123456"], "GLO-style"
     assert {p["id"] for p in r["runningNumbers"]} == {"runningNumberFrontThree", "runningNumberBackThree", "runningNumberBackTwo"}
@@ -979,13 +932,7 @@ def cmd_selftest(_):
         assert len(p1) == 10 and len(p3) == 3 and p1[0]["id"] > p1[-1]["id"], "pagination"
         assert not write_json(Path(t) / "latest", json.loads((Path(t) / "latest").read_text(encoding="utf-8"))), "ไม่เขียนซ้ำ"
     selftest_scrapers()
-    selftest_gsb()
-    g = baac_from_manycai({"code": "9,2,2,1,6,1,2", "code_last4": "3,2,7,0", "code_last3": ["1,6,7", "5,4,1"], "code3": ["0,3,5,9,6,4,9"]})
-    assert [x["numbers"] for x in g] == [["9221612"], ["3270"], ["167", "541"]], g
-    try:
-        baac_from_manycai({"code": "9,2,2", "code_last3": ["1,6,7"]}); raise AssertionError("ต้องล้มเหลว")
-    except ValueError:
-        pass
+    selftest_label()
     obj = {"data": [{"issue": "2026-11-11", "openCode": ",".join(xs_)}]} if (xs_ := ["74129", "97579", "20960", "11980", "13449", "30793", "18746", "86606", "00972", "26471", "1760", "9505", "3676", "7568", "1494", "1478", "5404", "5724", "9888", "5597", "714", "093", "910", "51", "34", "12", "95"]) else {}
     assert jpath(obj, "data.0.issue") == "2026-11-11"
     assert jpath([{"code": "2,1,8,6,5,3"}], "0.code") == "2,1,8,6,5,3"
@@ -1008,11 +955,11 @@ def main():
     p = sub.add_parser("fetch"); common(p); p.add_argument("--only"); p.add_argument("--backfill-months", type=int, default=0); p.set_defaults(f=cmd_fetch)
     p = sub.add_parser("probe"); common(p); p.set_defaults(f=cmd_probe)
     p = sub.add_parser("watch"); common(p); p.set_defaults(f=cmd_watch)
-    p = sub.add_parser("add"); common(p); p.add_argument("lottery", choices=["lao", "hanoi", "my", "yeekee", "gsb"])
+    p = sub.add_parser("add"); common(p); p.add_argument("lottery", choices=["lao", "hanoi", "my", "yeekee"])
     for k in ["n4", "special", "first", "top3", "bottom2", "numbers", "last3", "last2", "date", "round"]:
         p.add_argument("--" + k)
     p.set_defaults(f=cmd_add)
-    p = sub.add_parser("backfill"); common(p); p.add_argument("lottery", choices=["lao", "hanoi", "my", "gsb"])
+    p = sub.add_parser("backfill"); common(p); p.add_argument("lottery", choices=["lao", "hanoi", "my"])
     p.add_argument("--days", type=int, default=30); p.add_argument("--start"); p.add_argument("--to"); p.add_argument("--delay", type=float, default=2.0)
     p.set_defaults(f=cmd_backfill)
     p = sub.add_parser("serve"); common(p); p.add_argument("--port", type=int, default=8787); p.set_defaults(f=cmd_serve)
