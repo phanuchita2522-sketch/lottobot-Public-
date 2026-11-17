@@ -93,17 +93,19 @@ def parse_4d(text, conf=None):
     return w
 
 
-def parse_lao(text, conf=None):
-    """หวยลาวพัฒนา: ถ้าพบเลข 6 หลัก + ท้าย 4/3/2 ที่สอดคล้องกัน ใช้ท้าย 4 ตัว (รูปแบบที่ kapook แสดง) ไม่งั้นใช้เลข 4 หลักตัวแรก"""
+def parse_lao_full(text, conf=None):
+    """หวยลาวพัฒนา: ต้องพบเลข 6 หลัก + ท้าย 4/3/2 ที่สอดคล้องกันเท่านั้น (ไม่มีการเดาเลข 4 หลักตัวแรก — เคยหยิบ "2569" จากปี พ.ศ. มาเป็นผล)"""
     toks = tokens(clean(text, conf))
     for i in range(len(toks) - 3):
         a, b, c, d = toks[i:i + 4]
         if len(a) == 6 and len(b) == 4 and len(c) == 3 and len(d) == 2 and a.endswith(b) and b.endswith(c) and c.endswith(d):
-            return b
-    for t in toks:
-        if len(t) == 4:
-            return t
-    raise ValueError("ไม่พบเลขหวยลาว (6 หลัก/4 หลัก) หลัง anchor")
+            return a
+    raise ValueError("ไม่พบผลหวยลาว (เลข 6 หลัก + ท้าย 4/3/2 ที่สอดคล้องกัน) — ยังไม่ออกผลหรือโครงหน้าเปลี่ยน")
+
+
+def parse_lao(text, conf=None):
+    """คืนเลขท้าย 4 ตัว (ใช้ parse_lao_full ถ้าต้องการเลข 6 หลัก)"""
+    return parse_lao_full(text, conf)[-4:]
 
 
 TH_M = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]

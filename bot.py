@@ -294,10 +294,17 @@ def _digits(v, n, label):
     return v
 
 
-def build_lao(n4):
+def build_lao(n4, n6=None):
+    """โครงสร้างเดียวกับแอป (mkLao): เลข 6 ตัว (ถ้ามี) + ท้าย 4/3/2 + 2 ตัวล่าง"""
     n4 = _digits(n4, 4, "เลขลาว")
-    return [G("l4", "4 ตัวตรง", "full", [n4]), G("l3", "3 ตัวบน", "last", [n4[1:]]),
-            G("l2", "2 ตัวบน", "last", [n4[2:]]), G("l2b", "2 ตัวล่าง", "first", [n4[:2]])]
+    g = []
+    if n6:
+        n6 = _digits(n6, 6, "เลขลาว 6 หลัก")
+        if not n6.endswith(n4):
+            raise ValueError("เลข 6 หลักกับท้าย 4 ตัวไม่สอดคล้องกัน")
+        g.append(G("l6", "เลข 6 ตัว", "full", [n6]))
+    return g + [G("l4", "เลขท้าย 4 ตัว", "last", [n4]), G("l3", "เลขท้าย 3 ตัว (3 ตัวบน)", "last", [n4[1:]]),
+                G("l2", "เลขท้าย 2 ตัว (2 ตัวบน)", "last", [n4[2:]]), G("l2b", "2 ตัวล่าง", "full", [n4[:2]])]
 
 
 def build_hanoi(special, first, tiers=None):
@@ -429,7 +436,8 @@ def groups_from(lot, parser, conf, text):
     if parser == "4d":
         return build_my(scrapers.parse_4d(text, conf))
     if parser == "lao":
-        return build_lao(scrapers.parse_lao(text, conf))
+        n6 = scrapers.parse_lao_full(text, conf)
+        return build_lao(n6[-4:], n6)
     if parser == "manycai_baac":
         return baac_from_manycai(text)
     if parser == "gsb":
@@ -767,6 +775,26 @@ def cmd_add(a):
     log(f"บันทึก {lot} ({label}) แล้ว:", {g['name']: g['numbers'] for g in groups})
 
 
+def purge_unverified_lao(out):
+    """ลบผลลาวรุ่นเก่าที่ไม่มีเลข 6 หลัก (ตรวจโครงสร้างไม่ได้ — บางรายการเคยเป็นเลขผิด เช่นหยิบปี 2569) แล้วให้ backfill ดึงใหม่"""
+    p = Path(out) / "other" / "lao-history"
+    if not p.exists():
+        return
+    try:
+        draws = json.loads(p.read_text(encoding="utf-8")).get("draws", [])
+    except ValueError:
+        return
+    keep = [d for d in draws if any(g.get("id") == "l6" for g in d.get("groups", []))]
+    if len(keep) != len(draws):
+        log(f"  ลบผลลาวที่ตรวจโครงสร้างไม่ได้ {len(draws) - len(keep)} งวด (จะดึงใหม่ถ้าเว็บยังมี)")
+        write_json(p, {"lottery": "lao", "draws": keep})
+        latest = Path(out) / "other" / "lao"
+        if keep:
+            write_json(latest, make_other("lao", keep[0]["groups"], keep[0]["date"]))
+        elif latest.exists():
+            latest.unlink()
+
+
 def cmd_backfill(a):
     """ดึงผลย้อนหลังจากเว็บที่มีหน้าแยกตามวันที่ — ตั้ง "history_url" ใน sources.json เช่น
     https://example.com/xsmb/{dd}-{mm}-{yyyy}.html   (ใช้ได้กับชนิดที่มี parser: hanoi/my/lao/gsb)
@@ -779,6 +807,8 @@ def cmd_backfill(a):
     start = dt.date.fromisoformat(a.start) if a.start else end - dt.timedelta(days=a.days - 1)
     if (end - start).days > 400:
         sys.exit("ช่วงเกิน 400 วัน — แบ่งทำเป็นช่วง ๆ เพื่อไม่ยิงเว็บถี่เกินไป")
+    if lot == "lao":
+        purge_unverified_lao(a.out)
     parser = conf.get("parser") or PARSER_DEFAULT.get(lot, "regex")
     c = {**conf, **(source_list(conf) or [{}])[0]}
     c.pop("anchor", None)   # หน้าย้อนหลังเป็นคนละโครงกับหน้าล่าสุด
@@ -809,8 +839,9 @@ def cmd_backfill(a):
     # ผลล่าสุดของ other/<ชนิด> = งวดใหม่สุดในประวัติ (ใช้ backfill --days 3 ใน cron แทนหน้า "ล่าสุด" ที่ระบุวันที่ไม่ได้)
     p = Path(a.out) / "other" / f"{lot}-history"
     if p.exists():
-        top = json.loads(p.read_text(encoding="utf-8"))["draws"][0]
-        write_json(Path(a.out) / "other" / lot, make_other(lot, top["groups"], top["date"]))
+        ds = json.loads(p.read_text(encoding="utf-8"))["draws"]
+        if ds:
+            write_json(Path(a.out) / "other" / lot, make_other(lot, ds[0]["groups"], ds[0]["date"]))
     write_index(a.out)
     log(f"เสร็จ: ได้ {ok} งวด, ข้าม {skipped}")
 
@@ -870,7 +901,10 @@ def selftest_scrapers():
         scrapers.parse_4d(strip_tags("<td>1234</td>" * 22)); raise AssertionError("ต้องล้มเหลว")
     except ValueError:
         pass
-    assert scrapers.parse_lao(strip_tags("<b>ผลหวยพัฒนา 12/11/2026 งวดที่ 7</b> <i>4036</i>"), {"anchor": "ผลหวยพัฒนา"}) == "4036", "lao"
+    try:
+        scrapers.parse_lao(strip_tags("<b>ผลหวยพัฒนา 16 พฤศจิกายน 2569 งวดที่ 7</b> <i>ปี 2569</i>"), {"anchor": "ผลหวยพัฒนา"}); raise AssertionError("ต้องไม่เดาเลข 4 หลัก (เคยหยิบปี 2569)")
+    except ValueError:
+        pass
     assert scrapers.parse_lao(strip_tags("<td>522193</td><td>2193</td><td>193</td><td>93</td>")) == "2193", "lao6"
     page = "12 พฤศจิกายน 2569 xxxxxx xxxx xxx xx 11 พฤศจิกายน 2569 522193 2193 193 93 10 พฤศจิกายน 2569 173546 3546 546 46"
     try:
