@@ -2,10 +2,11 @@ name: lottobot
 
 on:
   schedule:
+    # หวยไทย: งวด 1 และ 16 (เลื่อนได้เมื่อติดวันหยุด) ผลออกราว 15:00 น. ไทย = 08:00 UTC
     - cron: "*/20 8-12 1-3,16-18 * *"
+    # หวยชนิดอื่น: ช่วงค่ำเวลาไทย (11:00-15:00 UTC) ทุกวัน
     - cron: "20,35,50 11 * * *"
     - cron: "10 12-15 * * *"
-    - cron: "0 3-9 16-17 * *"
   workflow_dispatch:
 
 permissions:
@@ -55,13 +56,15 @@ jobs:
 
   deploy:
     needs: update
-    if: always() && needs.update.outputs.changed == 'true'
+    if: always() && (needs.update.outputs.changed == 'true' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: main   # สำคัญ: ต้องดึงคอมมิต "update results" ล่าสุด ไม่ใช่คอมมิตที่เริ่มรัน (ไม่งั้นเว็บช้ากว่าข้อมูลจริง 1 รอบ)
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
