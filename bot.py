@@ -306,7 +306,7 @@ def _digits(v, n, label):
 
 
 def build_lao(n4, n6=None):
-    """โครงสร้างเดียวกับแอป (mkLao): เลข 6 ตัว (ถ้ามี) + ท้าย 4/3/2 + 2 ตัวล่าง"""
+    """โครงสร้างเดียวกับแอป (mkLao): เลข 6 ตัว (ถ้ามี) + เลขท้าย 4/3/2 ตัว"""
     n4 = _digits(n4, 4, "เลขลาว")
     g = []
     if n6:
@@ -314,8 +314,7 @@ def build_lao(n4, n6=None):
         if not n6.endswith(n4):
             raise ValueError("เลข 6 หลักกับท้าย 4 ตัวไม่สอดคล้องกัน")
         g.append(G("l6", "เลข 6 ตัว", "full", [n6]))
-    return g + [G("l4", "เลขท้าย 4 ตัว", "last", [n4]), G("l3", "เลขท้าย 3 ตัว (3 ตัวบน)", "last", [n4[1:]]),
-                G("l2", "เลขท้าย 2 ตัว (2 ตัวบน)", "last", [n4[2:]]), G("l2b", "2 ตัวล่าง", "full", [n4[:2]])]
+    return g + [G("l4", "เลขท้าย 4 ตัว", "last", [n4]), G("l3", "เลขท้าย 3 ตัว", "last", [n4[1:]]), G("l2", "เลขท้าย 2 ตัว", "last", [n4[2:]])]
 
 
 def build_hanoi(special, first, tiers=None):
@@ -1084,7 +1083,7 @@ def cmd_selftest(_):
     try: normalize_thai(bad, d); raise SystemExit("ต้องปฏิเสธข้อมูลที่ยังไม่ออก")
     except ValueError: pass
     assert parse_thai_date("16 พฤศจิกายน 2569") == dt.date(2026, 11, 16)
-    assert [g["numbers"] for g in build_lao("4036")] == [["4036"], ["036"], ["36"], ["40"]]
+    assert [g["numbers"] for g in build_lao("4036")] == [["4036"], ["036"], ["36"]]
     assert [g["numbers"] for g in build_hanoi("12345", "67890")] == [["345"], ["45"], ["90"]]
     assert [g["numbers"] for g in build_yeekee("123", "45")] == [["123"], ["23"], ["45"]]
     assert len(build_my([f"{i:04d}" for i in range(23)])[3]["numbers"]) == 10
