@@ -33,6 +33,9 @@ jobs:
         run: python bot.py fetch --out site
         env:
           THAI_FALLBACK_BASE: ${{ vars.THAI_FALLBACK_BASE }}
+      - name: Lao + Hanoi (ผลหวย.com API)
+        continue-on-error: true
+        run: python bot.py webapi --out site
       - name: Hanoi (by date)
         continue-on-error: true
         run: python bot.py backfill hanoi --days 3 --out site
