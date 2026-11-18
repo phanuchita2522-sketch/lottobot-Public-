@@ -25,6 +25,10 @@ TH_MONTHS = ["มกราคม", "กุมภาพันธ์", "มีน�
              "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"]
 GLO_URL = "https://www.glo.or.th/api/checking/getLotteryResult"
 OTHERS = ["lao", "hanoi", "my", "yeekee"]
+# ผลหวย.com (API สาธารณะฟรี มี CORS ไม่ต้องใช้คีย์): slug → ชนิดหวยในแอป
+API_BASE = "https://xn--t3cmiit.com/api/public/results"
+API_LOTS = {"lao-lottery": "lao", "hanoi-normal": "hanoi", "hanoi-special": "hanoi_sp", "hanoi-vip": "hanoi_vip", "hanoi-adhoc": "hanoi_ex"}
+SUB_LOTS = ["hanoi_sp", "hanoi_vip", "hanoi_ex"]
 ISO_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
@@ -343,8 +347,11 @@ def build_yeekee(top3, bottom2):
     return [G("y3", "3 ตัวบน", "full", [top3]), G("y2", "2 ตัวบน", "full", [top3[-2:]]), G("y2b", "2 ตัวล่าง", "full", [bottom2])]
 
 
-def make_other(lot, groups, label):
-    return {"lottery": lot, "date": label, "groups": groups, "source": "bot"}
+def make_other(lot, groups, label, via=None):
+    r = {"lottery": lot, "date": label, "groups": groups, "source": "bot"}
+    if via:
+        r["via"] = via   # ที่มาที่ตรวจโครงสร้างแล้ว (API) — แอปใช้ยอมรับลาวที่ไม่มีเลข 6 หลัก
+    return r
 
 
 def extract_other(lot, conf, text):
@@ -382,7 +389,27 @@ def draw_label(conf, text, now):
     return f"ดึงเมื่อ {now:%d/%m/%Y %H:%M}"
 
 
-def add_history(out, lot, groups, label):
+def _gnum(groups, gid):
+    for g in groups:
+        if g.get("id") == gid and g.get("numbers"):
+            return str(g["numbers"][0])
+    return None
+
+
+def merge_pick(lot, old, new):
+    """งวดเดียวกันมีผลจากหลายแหล่ง: คืน (keep_old, คำเตือน)
+    - เลขหลักไม่ตรงกัน (ลาว: ท้าย 4 ตัว / ฮานอย: 3 ตัวบน) = ไม่เขียนทับ ใช้ของเดิม + เตือน (ไม่ลบอะไร)
+    - ตรงกัน → ใช้ชุดที่ละเอียดกว่า (ลาวมีเลข 6 หลัก / ฮานอยมีรางวัลทางการครบ) ถ้าเท่ากันคงของเดิม"""
+    key = "l4" if lot == "lao" else "h3"
+    a, b2 = _gnum(old, key), _gnum(new, key)
+    if a and b2 and a != b2:
+        return True, f"แหล่งต่างกันให้เลขไม่ตรงกัน ({a} ≠ {b2}) — คงของเดิม ไม่เขียนทับ"
+    if lot != "lao" and _gnum(old, "h2b") and _gnum(new, "h2b") and _gnum(old, "h2b") != _gnum(new, "h2b") and len(new) > len(old):
+        return False, f"2 ตัวล่างต่างกัน ({_gnum(old, 'h2b')} ≠ {_gnum(new, 'h2b')}) — ใช้ชุดที่ละเอียดกว่า โปรดตรวจกับประกาศทางการ"
+    return (len(new) <= len(old)), None
+
+
+def add_history(out, lot, groups, label, via=None):
     """เก็บผลทุกงวดที่ดึงได้ไว้ที่ other/<ชนิด>-history ให้แอปตรวจย้อนหลังได้ — เก็บเฉพาะรายการที่รู้วันที่จริง"""
     d = parse_thai_date(label)
     if not d:
@@ -392,7 +419,14 @@ def add_history(out, lot, groups, label):
         draws = json.loads(p.read_text(encoding="utf-8")).get("draws", []) if p.exists() else []
     except ValueError:
         draws = []
-    draws = [x for x in draws if x.get("date") != label] + [{"date": label, "groups": groups}]
+    prev = next((x for x in draws if x.get("date") == label), None)
+    if prev and lot in ("lao", "hanoi", "hanoi_sp", "hanoi_vip", "hanoi_ex"):
+        keep, why = merge_pick(lot, prev["groups"], groups)
+        if why:
+            log(f"  ⚠ {lot} {label}: {why}")
+        if keep:
+            return False
+    draws = [x for x in draws if x.get("date") != label] + [{"date": label, "groups": groups, **({"via": via} if via else {})}]
     draws.sort(key=lambda x: parse_thai_date(x["date"]) or dt.date.min, reverse=True)
     return write_json(p, {"lottery": lot, "draws": draws[:300]})
 
@@ -628,7 +662,7 @@ def cmd_watch(a):
 def write_index(out):
     out = Path(out)
     idx = {"thai": {"latest": (stored_draws(out) or [None])[-1], "draws": len(stored_draws(out))}, "others": {}}
-    for lot in OTHERS:
+    for lot in OTHERS + SUB_LOTS:
         p = out / "other" / lot
         if p.exists():
             idx["others"][lot] = json.loads(p.read_text(encoding="utf-8")).get("date")
@@ -755,13 +789,13 @@ def purge_unverified_lao(out):
         draws = json.loads(p.read_text(encoding="utf-8")).get("draws", [])
     except ValueError:
         return
-    keep = [d for d in draws if any(g.get("id") == "l6" for g in d.get("groups", []))]
+    keep = [d for d in draws if d.get("via") == "api" or any(g.get("id") == "l6" for g in d.get("groups", []))]
     if len(keep) != len(draws):
         log(f"  ลบผลลาวที่ตรวจโครงสร้างไม่ได้ {len(draws) - len(keep)} งวด (จะดึงใหม่ถ้าเว็บยังมี)")
         write_json(p, {"lottery": "lao", "draws": keep})
         latest = Path(out) / "other" / "lao"
         if keep:
-            write_json(latest, make_other("lao", keep[0]["groups"], keep[0]["date"]))
+            write_json(latest, make_other("lao", keep[0]["groups"], keep[0]["date"], keep[0].get("via")))
         elif latest.exists():
             latest.unlink()
 
@@ -773,7 +807,10 @@ def cmd_backfill(a):
     lot, conf = a.lottery, (load_cfg(a.config).get(a.lottery) or {})
     tpl = conf.get("history_url")
     if not tpl:
-        sys.exit(f'ยังไม่ได้ตั้ง "history_url" ของ {lot} ใน sources.json (ต้องเป็นเว็บที่มีหน้าแยกตามวันที่ ใส่ {{dd}} {{mm}} {{yyyy}})')
+        sys.exit(f'ยังไม่ได้ตั้ง "history_url" ของ {lot} ใน sources.json (ต้องเป็นเว็บที่มีหน้าแยกตามวันที่ หรือหน้ารวมหลายงวดที่ตั้ง date_style: numblock)')
+    # history_url เป็นข้อความเดียว หรือรายการ [{name,url,date_style}] (ลองตามลำดับ; ถ้าสำเร็จหลายแหล่งแล้วเลขไม่ตรงกัน = ข้ามวันนั้น ไม่บันทึก)
+    srcs = [{"name": "", "url": tpl, "date_style": conf.get("date_style")}] if isinstance(tpl, str) else \
+           [{"name": x.get("name", ""), "url": x["url"], "date_style": x.get("date_style", conf.get("date_style"))} for x in tpl]
     end = dt.date.fromisoformat(a.to) if a.to else dt.datetime.now(ICT).date()
     start = dt.date.fromisoformat(a.start) if a.start else end - dt.timedelta(days=a.days - 1)
     if (end - start).days > 400:
@@ -784,27 +821,41 @@ def cmd_backfill(a):
     c = {**conf, **(source_list(conf) or [{}])[0]}
     c.pop("anchor", None)   # หน้าย้อนหลังเป็นคนละโครงกับหน้าล่าสุด
     ok = skipped = 0
+    blocked, page_cache = set(), {}
     weekdays = conf.get("history_days")
     d = start
     while d <= end:
         if weekdays is None or d.weekday() in weekdays:
-            url = tpl.format(dd=f"{d.day:02d}", mm=f"{d.month:02d}", yyyy=d.year, byyyy=d.year + 543, d=d.day, m=d.month, ymd=d.isoformat())
-            try:
-                if c.get("render") == "browser":
-                    raw = scrapers.render_browser(url)
-                else:
-                    st, raw = http(url)
-                    scrapers.check_block(st, raw)
-                text = strip_tags(raw)
-                if conf.get("date_style"):
-                    text = scrapers.anchor_date(text, d, conf["date_style"])
-                groups = groups_from(lot, parser, c, text)
-                add_history(a.out, lot, groups, thai_date(d)); ok += 1
-                log(f"  ✔ {d}")
-            except scrapers.Blocked as e:
-                sys.exit(f"ถูกบล็อกที่ {d}: {e} — หยุดทันที ไม่ยิงต่อ")
-            except (SourceError, ValueError) as e:
-                skipped += 1; log(f"  – {d}: {e}")
+            results = []
+            for sc in srcs:
+                if sc["url"] in blocked:
+                    continue
+                url = sc["url"].format(dd=f"{d.day:02d}", mm=f"{d.month:02d}", yyyy=d.year, byyyy=d.year + 543, d=d.day, m=d.month, ymd=d.isoformat())
+                try:
+                    if url not in page_cache:   # หน้ารวมหลายงวดดึงครั้งเดียวต่อรอบ
+                        if c.get("render") == "browser":
+                            page_cache[url] = scrapers.render_browser(url)
+                        else:
+                            st, raw = http(url)
+                            scrapers.check_block(st, raw)
+                            page_cache[url] = raw
+                    text = strip_tags(page_cache[url])
+                    if sc["date_style"]:
+                        text = scrapers.anchor_date(text, d, sc["date_style"])
+                    results.append((sc["name"] or url, groups_from(lot, parser, c, text)))
+                except scrapers.Blocked as e:
+                    blocked.add(sc["url"]); log(f"  ⚠ {sc['name'] or url} ถูกบล็อก: {e} — ไม่ยิงซ้ำในรอบนี้")
+                except (SourceError, ValueError) as e:
+                    log(f"  – {d} [{sc['name'] or url}]: {e}")
+            if len(blocked) == len(srcs):
+                sys.exit("ทุกแหล่งถูกบล็อก — หยุดทันที ไม่ยิงต่อ")
+            if not results:
+                skipped += 1
+            elif any(json.dumps(r[1], sort_keys=True) != json.dumps(results[0][1], sort_keys=True) for r in results[1:]):
+                skipped += 1; log(f"  ⚠ {d}: แหล่งต่าง ๆ ให้เลขไม่ตรงกัน ({', '.join(r[0] for r in results)}) — ไม่บันทึก")
+            else:
+                add_history(a.out, lot, results[0][1], thai_date(d)); ok += 1
+                log(f"  ✔ {d} ({', '.join(r[0] for r in results)})")
             time.sleep(max(1.0, a.delay))
         d += dt.timedelta(days=1)
     # ผลล่าสุดของ other/<ชนิด> = งวดใหม่สุดในประวัติ (ใช้ backfill --days 3 ใน cron แทนหน้า "ล่าสุด" ที่ระบุวันที่ไม่ได้)
@@ -812,9 +863,76 @@ def cmd_backfill(a):
     if p.exists():
         ds = json.loads(p.read_text(encoding="utf-8"))["draws"]
         if ds:
-            write_json(Path(a.out) / "other" / lot, make_other(lot, ds[0]["groups"], ds[0]["date"]))
+            write_json(Path(a.out) / "other" / lot, make_other(lot, ds[0]["groups"], ds[0]["date"], ds[0].get("via")))
     write_index(a.out)
     log(f"เสร็จ: ได้ {ok} งวด, ข้าม {skipped}")
+
+
+def api_groups(lot, prizes):
+    """แปลงผลจาก API → กลุ่มรางวัลแบบเดียวกับแอป; รูปแบบไม่ตรงที่รู้จัก/เลขไม่สอดคล้อง = ValueError (ไม่เดา)"""
+    pz = {}
+    for p in prizes or []:
+        nums = p.get("numbers") or []
+        if len(nums) == 1:
+            pz[str(p.get("slug"))] = str(nums[0]).strip()
+    if lot == "lao":
+        if not all(k in pz for k in ("last-four-digit", "last-three-digit", "last-two-digit")):
+            raise ValueError("ไม่พบรางวัลลาวครบ 4/3/2 ตัว")
+        n4, n3, n2 = _digits(pz["last-four-digit"], 4, "ท้าย 4 ตัว"), _digits(pz["last-three-digit"], 3, "ท้าย 3 ตัว"), _digits(pz["last-two-digit"], 2, "ท้าย 2 ตัว")
+        if n4[1:] != n3 or n4[2:] != n2:
+            raise ValueError(f"เลขท้าย 4/3/2 ไม่สอดคล้องกัน ({n4}/{n3}/{n2})")
+        return build_lao(n4)   # API ไม่มีเลข 6 หลัก — เลข 6 หลักมาจาก kapook (merge_pick เก็บชุดที่ละเอียดกว่า)
+    if not all(k in pz for k in ("special-prize", "three-digit-top", "two-digit-bottom")):
+        raise ValueError("ไม่พบรางวัลพิเศษ/3 ตัวบน/2 ตัวล่างครบ")
+    sp, t3, b2 = _digits(pz["special-prize"], 5, "รางวัลพิเศษ"), _digits(pz["three-digit-top"], 3, "3 ตัวบน"), _digits(pz["two-digit-bottom"], 2, "2 ตัวล่าง")
+    if sp[-3:] != t3:
+        raise ValueError(f"3 ตัวบนไม่ตรงกับท้ายรางวัลพิเศษ ({t3} vs {sp})")
+    g = [G("h3", "3 ตัวบน", "last", [t3]), G("h2", "2 ตัวบน", "last", [sp[-2:]]), G("h2b", "2 ตัวล่าง", "full", [b2])]
+    return [G("h4", "เลข 4 ตัว", "full", [sp[-4:]])] + g if lot != "hanoi" else g
+
+
+def cmd_webapi(a):
+    """ดึงผลลาว + ฮานอย 4 ประเภทจาก API ของ ผลหวย.com (ตามเอกสาร: แคชฝั่งเซิร์ฟเวอร์ 300 วิ, 120 คำขอ/นาที — เราเรียกแค่ 5 ครั้งต่อรอบ)"""
+    only = set(a.only or [])
+    done = 0
+    for slug, lot in API_LOTS.items():
+        if only and lot not in only:
+            continue
+        try:
+            st, raw = http(f"{API_BASE}?lottery={slug}&limit={max(1, min(20, a.limit))}")
+        except SourceError as e:
+            log(f"  ✖ {slug}: {e}"); continue
+        if st == 429:
+            log("  ✖ ถูกจำกัดความถี่ (429) — หยุดรอบนี้ ไม่ยิงซ้ำ"); break
+        if st == 404:
+            log(f"  – {slug}: ยังไม่มีผล"); continue
+        try:
+            j = json.loads(raw)
+            if st != 200 or not j.get("success"):
+                raise ValueError(f"HTTP {st} {str(j.get('error', ''))[:80]}")
+            draws = j["data"]
+        except (ValueError, KeyError, TypeError) as e:
+            log(f"  ✖ {slug}: อ่านคำตอบไม่ได้ ({e})"); continue
+        ok = bad = 0
+        for d in draws:
+            try:
+                if d.get("lottery") != slug:
+                    raise ValueError("ชนิดหวยในคำตอบไม่ตรงกับที่ขอ")
+                day = dt.date.fromisoformat(str(d["drawDate"]))
+                if day > dt.datetime.now(ICT).date():
+                    raise ValueError("วันที่อยู่ในอนาคต")
+                add_history(a.out, lot, api_groups(lot, d.get("prizes")), thai_date(day), via="api"); ok += 1
+            except (ValueError, KeyError, TypeError) as e:
+                bad += 1; log(f"  – {slug} {d.get('drawDate') if isinstance(d, dict) else '?'}: {e}")
+        p = Path(a.out) / "other" / f"{lot}-history"
+        if p.exists():
+            ds = json.loads(p.read_text(encoding="utf-8"))["draws"]
+            if ds:
+                write_json(Path(a.out) / "other" / lot, make_other(lot, ds[0]["groups"], ds[0]["date"], ds[0].get("via")))
+        log(f"  ✔ {slug} → {lot}: {ok} งวด" + (f" (ข้าม {bad})" if bad else "")); done += ok
+        time.sleep(1.0)
+    write_index(a.out)
+    log(f"เสร็จ: {done} งวด (ข้อมูลจาก ผลหวย.com — อ้างอิงประกาศทางการ)")
 
 
 def cmd_serve(a):
@@ -839,6 +957,58 @@ def selftest_scrapers():
     labels = ["ĐB", "G1", "G2", "G2", "G3", "G3", "G3", "G3", "G3", "G3", "G4", "G4", "G4", "G4", "G5", "G5", "G5", "G5", "G5", "G5", "G6", "G6", "G6", "G7", "G7", "G7", "G7"]
     html = "<html><body><h1>XSMB ngày 12 tháng 11 năm 2026 18h15</h1><table>" + "".join(
         f"<tr><td>{l}</td><td>{n}</td></tr>" for l, n in zip(labels, xs)) + "</table><footer>Hotline 0912345678 © 2026</footer></body></html>"
+    # xosodaiphat: หน้ารวมหลายงวด หัวข้อ "XSMB dd/mm/yyyy" + Mã ĐB (15LH) — ต้องได้เฉพาะงวดที่ขอ ไม่ปนงวดอื่น และเมนู/ลิงก์ที่มีวันที่ไม่ใช่ผล
+    def blk(day, db):
+        return (f"<h2>XSMB {day}</h2><p>Mã ĐB: 15LH 2LH 9LH</p><p>ĐB {db} G1 11111 G2 22222 22223 G3 33331 33332 33333 33334 33335 33336 "
+                "G4 4441 4442 4443 4444 G5 5551 5552 5553 5554 5555 5556 G6 661 662 663 G7 71 72 73 74</p>")
+    pg = "<a href='/x'>Kết quả 17/11/2026</a>" + blk("17/11/2026", "29865") + blk("16/11/2026", "11223")
+    for dd, want in ((dt.date(2026, 11, 17), "29865"), (dt.date(2026, 11, 16), "11223")):
+        rr = scrapers.parse_xsmb(scrapers.anchor_date(strip_tags(pg), dd, "numblock"))
+        assert rr["db"] == want and rr["g7"] == ["71", "72", "73", "74"], "xosodaiphat numblock " + str(dd)
+    try:
+        scrapers.anchor_date(strip_tags(pg), dt.date(2026, 11, 10), "numblock"); raise AssertionError("ต้องล้มเหลว")
+    except ValueError:
+        pass
+    # kapook /laolottery: หน้ารวมหลายงวด (ตามภาพหน้าจอจริง) — แถบข้างมีลิงก์วันที่ที่ไม่มีเลข ต้องข้าม และไม่ปนงวดอื่น
+    lp = ("<h2>ตรวจหวยลาว 17 พฤศจิกายน 2569</h2><p>เลข 6 ตัว 489441</p><p>เลขท้าย 4 ตัว 9441 เลขท้าย 3 ตัว 441 เลขท้าย 2 ตัว 41</p>"
+          "<h3>ตรวจหวยลาวย้อนหลัง</h3><div>ตรวจหวยลาว งวดประจำวันที่ 16 พฤศจิกายน 2569</div><p>เลข 6 ตัว เลขท้าย 4 ตัว เลขท้าย 3 ตัว เลขท้าย 2 ตัว 460071 0071 071 71</p>"
+          "<div>ตรวจหวยลาว งวดประจำวันที่ 13 พฤศจิกายน 2569</div><p>290900 0900 900 00</p>")
+    lp = "<a>ตรวจหวยลาว งวดประจำวันที่ 16 พฤศจิกายน 2569</a>" + lp
+    for dd, want in ((dt.date(2026, 11, 17), "489441"), (dt.date(2026, 11, 16), "460071"), (dt.date(2026, 11, 13), "290900")):
+        assert scrapers.parse_lao_full(scrapers.anchor_date(strip_tags(lp), dd, "thblock")) == want, "kapook thblock " + str(dd)
+    try:
+        scrapers.anchor_date(strip_tags(lp), dt.date(2026, 11, 12), "thblock"); raise AssertionError("ต้องล้มเหลว")
+    except ValueError:
+        pass
+    # ผลหวย.com API (รูปแบบจริงที่ผู้ใช้ส่งมา): ลาว 4/3/2, ฮานอยพิเศษ/ปกติ = รางวัลพิเศษ 5 หลัก + 3 ตัวบน + 2 ตัวล่าง
+    P = lambda s, n: {"slug": s, "name": "", "numbers": [n]}
+    lg = api_groups("lao", [P("last-four-digit", "9441"), P("last-three-digit", "441"), P("last-two-digit", "41")])
+    assert _gnum(lg, "l4") == "9441" and _gnum(lg, "l2") == "41" and not _gnum(lg, "l6"), "api lao"
+    hs = api_groups("hanoi_sp", [P("special-prize", "61306"), P("three-digit-top", "306"), P("two-digit-bottom", "89")])
+    assert [(g["id"], g["numbers"][0]) for g in hs] == [("h4", "1306"), ("h3", "306"), ("h2", "06"), ("h2b", "89")], "api hanoi_sp"
+    hn = api_groups("hanoi", [P("special-prize", "29865"), P("three-digit-top", "865"), P("two-digit-bottom", "20")])
+    assert [g["id"] for g in hn] == ["h3", "h2", "h2b"] and _gnum(hn, "h3") == "865", "api hanoi"
+    for bad_lot, bad in (("lao", [P("last-four-digit", "9441"), P("last-three-digit", "441"), P("last-two-digit", "42")]),
+                         ("hanoi", [P("special-prize", "29865"), P("three-digit-top", "866"), P("two-digit-bottom", "20")]),
+                         ("hanoi_sp", [P("special-prize", "61306")])):
+        try:
+            api_groups(bad_lot, bad); raise AssertionError("ต้องล้มเหลว " + bad_lot)
+        except ValueError:
+            pass
+    # merge: เลขหลักไม่ตรง = คงของเดิม; ตรงกัน = เก็บชุดที่ละเอียดกว่า (ลาวมี l6)
+    l6 = build_lao("9441", "489441")
+    assert merge_pick("lao", l6, lg) == (True, None), "merge keep l6"
+    assert merge_pick("lao", lg, l6) == (False, None), "merge upgrade to l6"
+    assert merge_pick("lao", l6, build_lao("1234"))[0] is True and merge_pick("lao", l6, build_lao("1234"))[1], "merge conflict"
+    assert merge_pick("hanoi", hn, build_hanoi("29865", "11120", {"db": "29865", "g1": "11120", "g2": ["1"] * 2, "g3": ["1"] * 6, "g4": ["1"] * 4, "g5": ["1"] * 6, "g6": ["1"] * 3, "g7": ["1"] * 4}))[0] is False, "merge hanoi detail"
+    import shutil
+    td = tempfile.mkdtemp()
+    add_history(td, "lao", lg, "17 พฤศจิกายน 2569", via="api")
+    add_history(td, "lao", build_lao("2569"), "1 มกราคม 2569")   # เลขปีเก่าที่ไม่มี l6 และไม่ได้มาจาก API ต้องถูกลบ
+    purge_unverified_lao(td)
+    dr = json.loads((Path(td) / "other" / "lao-history").read_text(encoding="utf-8"))["draws"]
+    assert [d["date"] for d in dr] == ["17 พฤศจิกายน 2569"] and dr[0]["via"] == "api", "purge keeps api"
+    shutil.rmtree(td)
     r = scrapers.parse_xsmb(strip_tags(html))
     assert r["db"] == "12345" and r["g1"] == "67890" and r["g7"] == ["12", "34", "56", "78"] and len(r["g3"]) == 6, "xsmb"
     g = build_hanoi(r["db"], r["g1"], r)
@@ -962,6 +1132,7 @@ def main():
     p = sub.add_parser("backfill"); common(p); p.add_argument("lottery", choices=["lao", "hanoi", "my"])
     p.add_argument("--days", type=int, default=30); p.add_argument("--start"); p.add_argument("--to"); p.add_argument("--delay", type=float, default=2.0)
     p.set_defaults(f=cmd_backfill)
+    p = sub.add_parser("webapi"); common(p); p.add_argument("--limit", type=int, default=20); p.add_argument("--only", nargs="*", choices=list(API_LOTS.values())); p.set_defaults(f=cmd_webapi)
     p = sub.add_parser("serve"); common(p); p.add_argument("--port", type=int, default=8787); p.set_defaults(f=cmd_serve)
     p = sub.add_parser("selftest"); p.set_defaults(f=cmd_selftest)
     a = ap.parse_args(); a.f(a)
