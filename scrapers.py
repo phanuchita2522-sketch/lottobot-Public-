@@ -115,6 +115,34 @@ TH_A = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "ม�
 def anchor_date(text, d, style):
     """หน้าที่รวมหลายงวด: ตัดให้เหลือเฉพาะบล็อกของวันที่ d — style 'th' = วันที่ไทย (ตัดที่วันที่ถัดไป), 'num' = dd/mm/yyyy (ต้องมีในหน้า)
     ไม่พบวันที่ = ValueError (ไม่เดา กันหน้าที่เด้งไปงวดล่าสุดแล้วติดป้ายวันที่ผิด)"""
+    if style == "numblock":
+        # หน้ารวมหลายงวด (เช่น xosodaiphat): วันที่แต่ละงวดเป็นหัวข้อนำหน้าตารางผล — เอาเฉพาะ "ช่วงที่ตามหลังหัวข้อวันที่ d จนถึงวันที่ถัดไป"
+        # ที่มีตัวเลขพอสำหรับผลเต็ม (ข้ามลิงก์/เมนูที่มีวันที่แต่ไม่มีผล) ไม่ปนกับงวดอื่น
+        dre = r"(?<!\d)\d{1,2}\s*[/.\-]\s*\d{1,2}\s*[/.\-]\s*\d{4}(?!\d)"
+        want = re.compile(rf"(?<!\d)0?{d.day}\s*[/.\-]\s*0?{d.month}\s*[/.\-]\s*{d.year}(?!\d)")
+        for m in want.finditer(text):
+            rest = text[m.end():]
+            nx = re.search(dre, rest)
+            sec = rest[:nx.start()] if nx else rest
+            sec = re.sub(r"(?<![0-9A-Za-z])\d{1,2}[A-Z]{2}(?![0-9A-Za-z])", " ", sec)   # "Mã ĐB" เช่น 15LH — ไม่ใช่เลขรางวัล
+            if len(tokens(clean(sec))) >= 27:
+                return sec
+        raise ValueError(f"ไม่พบหัวข้อวันที่ {d:%d/%m/%Y} ที่มีผลครบตามหลังในหน้า (ยังไม่ออก/หน้าไม่มีงวดนี้)")
+    if style == "thblock":
+        # หน้ารวมหลายงวด วันที่ไทย (kapook /laolottery): หัวข้อ "ตรวจหวยลาว 17 พฤศจิกายน 2569" ตามด้วย 6/4/3/2 — ข้ามลิงก์ในแถบข้างที่มีแต่วันที่
+        y = d.year + 543
+        mon = "|".join(map(re.escape, [TH_M[d.month - 1], TH_A[d.month - 1]]))
+        allm = "|".join(map(re.escape, TH_M + TH_A))
+        for m in re.finditer(rf"(?<!\d){d.day}\s*(?:{mon})\s*(?:{y}|{y % 100})(?!\d)", text):
+            rest = text[m.end():]
+            nx = re.search(rf"(?<!\d)\d{{1,2}}\s*(?:{allm})\s*(?:\d{{4}}|\d{{2}})(?!\d)", rest)
+            sec = rest[:nx.start()] if nx else rest
+            try:
+                parse_lao_full(sec)
+                return sec
+            except ValueError:
+                continue
+        raise ValueError(f"ไม่พบงวด {d.day} {TH_M[d.month - 1]} {y} ที่มีเลข 6/4/3/2 ครบตามหลังในหน้า (ยังไม่ออก/หน้าไม่มีงวดนี้)")
     if style == "num":
         m = re.search(rf"(?<!\d)0?{d.day}\s*[/.\-]\s*0?{d.month}\s*[/.\-]\s*{d.year}(?!\d)", text)
         if not m:
