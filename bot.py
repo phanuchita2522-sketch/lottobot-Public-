@@ -887,7 +887,8 @@ def api_groups(lot, prizes):
     if sp[-3:] != t3:
         raise ValueError(f"3 ตัวบนไม่ตรงกับท้ายรางวัลพิเศษ ({t3} vs {sp})")
     g = [G("h3", "3 ตัวบน", "last", [t3]), G("h2", "2 ตัวบน", "last", [sp[-2:]]), G("h2b", "2 ตัวล่าง", "full", [b2])]
-    return [G("h4", "เลข 4 ตัว", "full", [sp[-4:]])] + g if lot != "hanoi" else g
+    hsp = G("hsp", "รางวัลพิเศษ", "full", [sp])   # เลขพิเศษ 5 หลักเต็ม
+    return [hsp] + g if lot == "hanoi" else [hsp, G("h4", "เลข 4 ตัว", "full", [sp[-4:]])] + g
 
 
 def cmd_webapi(a):
@@ -984,9 +985,9 @@ def selftest_scrapers():
     lg = api_groups("lao", [P("last-four-digit", "9441"), P("last-three-digit", "441"), P("last-two-digit", "41")])
     assert _gnum(lg, "l4") == "9441" and _gnum(lg, "l2") == "41" and not _gnum(lg, "l6"), "api lao"
     hs = api_groups("hanoi_sp", [P("special-prize", "61306"), P("three-digit-top", "306"), P("two-digit-bottom", "89")])
-    assert [(g["id"], g["numbers"][0]) for g in hs] == [("h4", "1306"), ("h3", "306"), ("h2", "06"), ("h2b", "89")], "api hanoi_sp"
+    assert [(g["id"], g["numbers"][0]) for g in hs] == [("hsp", "61306"), ("h4", "1306"), ("h3", "306"), ("h2", "06"), ("h2b", "89")], "api hanoi_sp"
     hn = api_groups("hanoi", [P("special-prize", "29865"), P("three-digit-top", "865"), P("two-digit-bottom", "20")])
-    assert [g["id"] for g in hn] == ["h3", "h2", "h2b"] and _gnum(hn, "h3") == "865", "api hanoi"
+    assert [g["id"] for g in hn] == ["hsp", "h3", "h2", "h2b"] and _gnum(hn, "h3") == "865" and _gnum(hn, "hsp") == "29865", "api hanoi"
     for bad_lot, bad in (("lao", [P("last-four-digit", "9441"), P("last-three-digit", "441"), P("last-two-digit", "42")]),
                          ("hanoi", [P("special-prize", "29865"), P("three-digit-top", "866"), P("two-digit-bottom", "20")]),
                          ("hanoi_sp", [P("special-prize", "61306")])):
