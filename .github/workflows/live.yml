@@ -1,0 +1,40 @@
+name: live
+
+# เฝ้าผลลาว/ฮานอยแบบถี่เฉพาะช่วงออกผล (ฮานอย 16:30-19:30 น. · ลาว จ-ศ 20:00-22:00 น. เวลาไทย)
+# รันค้างในงานเดียว ดึงทุก ~45-60 วินาที แล้ว commit + deploy ทันทีที่ผลเปลี่ยน แล้วหยุดเมื่อผลออกครบ
+# เริ่มโดย: Cloudflare Worker (cf-trigger.js) เป็นหลัก · cron ด้านล่างเป็นตัวสำรองถ้า Worker ไม่ได้ตั้ง
+on:
+  schedule:
+    - cron: "35 9 * * *"     # 16:35 น. ไทย (ฮานอย)
+    - cron: "5 13 * * 1-5"   # 20:05 น. ไทย (ลาว จ-ศ)
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "ทำงานสูงสุดกี่นาที"
+        default: "170"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live
+  cancel-in-progress: false
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 190
+    permissions:
+      contents: write
+      actions: write      # สั่ง deploy.yml (workflow_dispatch) ได้
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Live watch
+        run: python bot.py live --out site --publish --minutes "${{ github.event.inputs.minutes || '170' }}"
