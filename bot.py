@@ -12,7 +12,7 @@
 
 คำสั่ง:  fetch | probe | add | selftest | serve     (ดู README.md)
 """
-import argparse, datetime as dt, functools, html as htmllib, http.server, json, os, re, sys, tempfile, time
+import argparse, datetime as dt, functools, hashlib, html as htmllib, http.server, json, os, re, subprocess, sys, tempfile, time
 import urllib.error, urllib.request
 from pathlib import Path
 
@@ -127,6 +127,10 @@ def normalize_thai(obj, d):
         raise ValueError("ไม่ใช่ JSON object")
     if isinstance(r.get("result"), dict) and isinstance(r["result"].get("data"), dict):
         r = r["result"]   # GLO รูปแบบปัจจุบัน (พ.ย. 2569): response.result.data.{first,second,...} (ตรวจจาก log จริง)
+    for k in ("date", "draw_date", "drawDate"):   # ถ้าเซิร์ฟเวอร์ตอบวันที่งวดมา ต้องตรงกับที่ขอ (กันได้ "งวดล่าสุด" มาติดป้ายผิดวัน)
+        v = r.get(k) if isinstance(r.get(k), str) else None
+        if v and re.match(r"\d{4}-\d\d-\d\d", v) and v[:10] != d.isoformat():
+            raise ValueError(f"งวดที่ตอบมา ({v[:10]}) ไม่ตรงกับที่ขอ ({d.isoformat()})")
     prizes, running = [], []
     if isinstance(r.get("prizes"), list):
         for p in r["prizes"]:
@@ -202,7 +206,7 @@ def run_dataset(out):
             continue
         try:
             d, res = dataset_to_draw(rec)
-        except (ValueError, KeyError):
+        except Exception:   # ข้อมูลชุมชนมีรายการเสีย 1 รายการ ต้องไม่ทำให้ทั้งรอบล้ม
             skipped += 1
             continue
         write_json(Path(out) / "lotto" / iso, res)
@@ -221,7 +225,7 @@ def fetch_thai_draw(d):
         return None
     try:
         return normalize_thai(obj, d)
-    except ValueError as e:
+    except (ValueError, AttributeError, TypeError, KeyError) as e:
         log(f"  [{d}] ตอบกลับแล้วแต่ใช้ไม่ได้: {e}")
         if "ไม่รู้จักรูปแบบ" in str(e):   # วินิจฉัย: แสดงโครงสร้างที่ GLO ตอบมา (เฉพาะชื่อคีย์ + ต้นข้อความ) เพื่อปรับตัวอ่านให้ตรง
             r = obj.get("response", obj) if isinstance(obj, dict) else obj
@@ -232,8 +236,8 @@ def fetch_thai_draw(d):
 
 
 def candidate_dates(today, days_back):
-    """งวดปกติคือวันที่ 1 และ 16 (เลื่อนได้ 1-2 วันเมื่อติดวันหยุด) จึงลองเฉพาะ 1-3 และ 16-18"""
-    return [today - dt.timedelta(i) for i in range(days_back + 1) if (today - dt.timedelta(i)).day in (1, 2, 3, 16, 17, 18)]
+    """งวดปกติคือวันที่ 1 และ 16 (เลื่อนได้เมื่อติดวันหยุด เช่น 30/31, 2-3, 15, 17-18) จึงลองเฉพาะวันที่เหล่านี้"""
+    return [today - dt.timedelta(i) for i in range(days_back + 1) if (today - dt.timedelta(i)).day in (1, 2, 3, 15, 16, 17, 18, 29, 30, 31)]
 
 
 def stored_draws(out):
@@ -935,6 +939,157 @@ def cmd_webapi(a):
     log(f"เสร็จ: {done} งวด (ข้อมูลจาก ผลหวย.com — อ้างอิงประกาศทางการ)")
 
 
+# ---------------------------------------------------------------- live: วนดึงถี่ ๆ เฉพาะช่วงออกผล แล้วเผยแพร่ทันทีที่เปลี่ยน
+LIVE_WINDOWS = {   # ชนิด: (เริ่ม, สิ้นสุด) นาทีของวันเวลาไทย · ฮานอยออกราว 17:00-18:30 · ลาวราว 20:30 (จันทร์-ศุกร์)
+    "hanoi": (16 * 60 + 30, 19 * 60 + 30), "hanoi_sp": (16 * 60 + 30, 19 * 60 + 30), "hanoi_vip": (16 * 60 + 30, 19 * 60 + 30),
+    "hanoi_ex": (16 * 60 + 30, 19 * 60 + 30), "lao": (20 * 60, 22 * 60)}
+LIVE_DAYS = {"lao": range(0, 5)}
+
+
+def live_lots(now):
+    cur = now.hour * 60 + now.minute
+    return [l for l, (a, z) in LIVE_WINDOWS.items() if a <= cur <= z and now.weekday() in LIVE_DAYS.get(l, range(7))]
+
+
+def live_snapshot(out):
+    h = hashlib.md5()
+    for p in sorted((Path(out) / "other").glob("*")) if (Path(out) / "other").exists() else []:
+        if p.is_file():
+            h.update(p.name.encode()); h.update(p.read_bytes())
+    return h.hexdigest()
+
+
+def live_done(out, lot, today):
+    p = Path(out) / "other" / lot
+    try:
+        return json.loads(p.read_text(encoding="utf-8")).get("date") == thai_date(today)
+    except (OSError, ValueError):
+        return False
+
+
+def _run(*cmd, timeout=120):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as e:
+        return subprocess.CompletedProcess(cmd, 1, "", str(e))
+
+
+def publish(out, msg, deploy=True):
+    """commit + push ข้อมูลใหม่ แล้วสั่ง deploy.yml (workflow_dispatch จาก GITHUB_TOKEN ใช้ได้) — คืน True/False/'retry'"""
+    _run("git", "config", "user.name", "lottobot"); _run("git", "config", "user.email", "lottobot@users.noreply.github.com")
+    _run("git", "add", str(out))
+    if _run("git", "diff", "--cached", "--quiet").returncode == 0:
+        return False
+    if _run("git", "commit", "-m", msg).returncode:
+        return False
+    p = _run("git", "pull", "--rebase", "origin", "main")
+    if p.returncode:   # ชนกับรอบอื่น: ทิ้งของเรา ใช้ของบน remote แล้วให้รอบถัดไปดึงใหม่ทันที
+        _run("git", "rebase", "--abort"); _run("git", "reset", "--hard", "origin/main")
+        log("  ⚠ rebase ชน — รีเซ็ตเป็นของบน remote แล้วดึงใหม่")
+        return "retry"
+    if _run("git", "push", "origin", "HEAD:main").returncode:
+        log("  ✖ push ไม่สำเร็จ"); return False
+    if deploy:
+        r = _run("gh", "workflow", "run", "deploy.yml", "--ref", "main")
+        log("  ✔ push แล้ว" + (" + สั่ง deploy" if r.returncode == 0 else f" (สั่ง deploy ไม่ได้: {(r.stderr or '')[:100]})"))
+    return True
+
+
+PEEK_URL = "https://api.lotteryresulte.org/results"   # แจกฟรี · มีแค่เลข 3/2 ตัว — ใช้เป็นสัญญาณ "ผลออกแล้ว" เท่านั้น ไม่เผยแพร่เลขจากที่นี่
+PEEK_KEYS = {"HANOI_NORMAL": "hanoi", "HANOI_SPECIAL": "hanoi_sp", "HANOI_VIP": "hanoi_vip", "HANOI_EXTRA": "hanoi_ex"}
+
+
+def peek_signal(today):
+    """คืน {lot: (st3, st2)} ของผลวันนี้ที่ API สัญญาณรายงานแล้ว (ล้มเหลว/ผิดรูปแบบ = {} ไม่กระทบงานหลัก)"""
+    try:
+        st, raw = http(PEEK_URL, retries=0, timeout=10)
+        j = json.loads(raw)
+        if st != 200 or not isinstance(j, dict):
+            return {}
+    except (SourceError, ValueError):
+        return {}
+    out = {}
+    for k, lot in PEEK_KEYS.items():
+        v = j.get(k)
+        if not isinstance(v, dict) or v.get("Date") != today.strftime("%d/%m/%Y"):
+            continue
+        s3, s2 = str(v.get("st3", "")), str(v.get("st2", ""))
+        if re.fullmatch(r"\d{3}", s3) and re.fullmatch(r"\d{2}", s2):
+            out[lot] = (s3, s2)
+    return out
+
+
+def peek_check(out, lot, sig):
+    """เทียบเลขสัญญาณกับผลที่เราเก็บ — ไม่ตรงแค่เตือนใน log ไม่แก้ข้อมูล"""
+    try:
+        gs = {g["id"]: g["numbers"] for g in json.loads((Path(out) / "other" / lot).read_text(encoding="utf-8"))["groups"]}
+    except (OSError, ValueError, KeyError, TypeError):
+        return
+    h3, h2s = (gs.get("h3") or [None])[0], {(gs.get("h2") or [None])[0], (gs.get("h2b") or [None])[0]}
+    if h3 != sig[0] or sig[1] not in h2s:
+        log(f"  ⚠ {lot}: เลขสัญญาณ {sig} ไม่ตรงกับที่เก็บ (3 ตัว {h3}, 2 ตัว {sorted(x for x in h2s if x)}) — ตรวจแหล่งข้อมูล")
+
+
+def cmd_live(a):
+    """วนดึงผลลาว/ฮานอยเฉพาะช่วงเวลาออกผล: API ทุก --api-every วิ (ต้นทางแคช 300 วิ จึงไม่มีประโยชน์ถ้าถี่กว่านี้มาก)
+    + หน้าเว็บต้นทาง (history_url) ทุก --page-every วิ แล้ว commit/push/deploy ทันทีที่ผลเปลี่ยน
+    หยุดเมื่อผลของวันนี้ออกครบ (และยืนยันซ้ำอีก 1 รอบ) / พ้นช่วงเวลา / ครบ --minutes · ไม่ยิงถี่กว่า 30 วินาที และถอยห่างเมื่อล้มเหลว"""
+    deadline = time.time() + a.minutes * 60
+    api_every, page_every = max(60, a.api_every), max(30, a.page_every)
+    st = {"api": 0.0, "page": {}, "fails": 0, "last_pub": 0.0, "confirm": {}}
+    sig = live_snapshot(a.out)
+    log(f"live: เริ่ม (สูงสุด {a.minutes} นาที, API ทุก {api_every} วิ, หน้าเว็บทุก {page_every} วิ)")
+    while time.time() < deadline:
+        now = dt.datetime.now(ICT)
+        lots = list(LIVE_WINDOWS) if a.force_window else live_lots(now)
+        pending = [l for l in lots if st["confirm"].get(l, 0) < 2]
+        if not pending:
+            log("live: ไม่มีชนิดที่ต้องเฝ้าแล้ว (พ้นช่วงเวลา/ผลออกครบและยืนยันแล้ว) — จบ"); break
+        try:
+            if time.time() >= st.get("peek", 0):   # ตรวจสัญญาณทุก ~30 วิ (ไฟล์เล็ก) — ผลมาแล้วแต่เรายังไม่มี = ดึงทันที ไม่รอรอบ
+                st["peek"] = time.time() + 30
+                for l, sg in peek_signal(now.date()).items():
+                    if l not in pending:
+                        continue
+                    if live_done(a.out, l, now.date()):
+                        if not st.setdefault("checked", {}).get(l):
+                            peek_check(a.out, l, sg); st["checked"][l] = True
+                    elif time.time() >= st.setdefault("kick", {}).get(l, 0):
+                        log(f"  ➜ สัญญาณว่า {l} ออกแล้ว ({sg[0]}/{sg[1]}) — ดึงทันที")
+                        st["api"] = 0; st["page"] = {}; st["kick"][l] = time.time() + 60
+            api_lots = [l for l in pending if l in API_LOTS.values()]
+            if api_lots and time.time() >= st["api"]:
+                cmd_webapi(argparse.Namespace(out=a.out, limit=5, only=api_lots)); st["api"] = time.time() + api_every
+            for lot in [l for l in pending if l in ("hanoi", "lao")]:
+                if time.time() >= st["page"].get(lot, 0):
+                    try:
+                        cmd_backfill(argparse.Namespace(lottery=lot, days=1, start=None, to=None, delay=0.5, out=a.out, config=a.config))
+                    except SystemExit:
+                        pass   # ไม่ได้ตั้ง history_url
+                    st["page"][lot] = time.time() + page_every
+            st["fails"] = 0
+        except Exception as e:   # ไม่ให้รอบเดียวล้มทั้งงาน
+            st["fails"] += 1; log("  ✖ รอบนี้ผิดพลาด:", repr(e)[:150])
+            st["api"] = st["page"]["hanoi"] = st["page"]["lao"] = time.time() + min(300, 30 * 2 ** min(st["fails"], 4))
+        new = live_snapshot(a.out)
+        if new != sig:
+            write_index(a.out)
+            log("  ✔ มีผลเปลี่ยน")
+            if a.publish and time.time() - st["last_pub"] >= 20:
+                r = publish(a.out, "live update", deploy=True)
+                st["last_pub"] = time.time()
+                if r == "retry":
+                    st["api"] = 0; st["page"] = {}; new = live_snapshot(a.out)
+            sig = live_snapshot(a.out)
+        today = now.date()
+        for l in pending:   # ผลของวันนี้ออกแล้ว: ยืนยันซ้ำ 1 รอบแล้วหยุดเฝ้าชนิดนั้น (กันเลขแก้ไขทีหลัง)
+            if live_done(a.out, l, today):
+                st["confirm"][l] = st["confirm"].get(l, 0) + 1
+        time.sleep(max(5, a.tick))
+    log("live: จบงาน")
+
+
+
 def cmd_serve(a):
     class H(http.server.SimpleHTTPRequestHandler):
         def end_headers(self):
@@ -1133,6 +1288,9 @@ def main():
     p.add_argument("--days", type=int, default=30); p.add_argument("--start"); p.add_argument("--to"); p.add_argument("--delay", type=float, default=2.0)
     p.set_defaults(f=cmd_backfill)
     p = sub.add_parser("webapi"); common(p); p.add_argument("--limit", type=int, default=20); p.add_argument("--only", nargs="*", choices=list(API_LOTS.values())); p.set_defaults(f=cmd_webapi)
+    p = sub.add_parser("live"); common(p); p.add_argument("--minutes", type=int, default=150); p.add_argument("--api-every", dest="api_every", type=int, default=60)
+    p.add_argument("--page-every", dest="page_every", type=int, default=45); p.add_argument("--tick", type=int, default=15)
+    p.add_argument("--publish", action="store_true"); p.add_argument("--force-window", dest="force_window", action="store_true"); p.set_defaults(f=cmd_live)
     p = sub.add_parser("serve"); common(p); p.add_argument("--port", type=int, default=8787); p.set_defaults(f=cmd_serve)
     p = sub.add_parser("selftest"); p.set_defaults(f=cmd_selftest)
     a = ap.parse_args(); a.f(a)
