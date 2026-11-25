@@ -7,15 +7,20 @@ on:
     - cron: "*/10 7-13 30,31,1-3,15-18 * *"
     # หวยอื่น (ลาว/ฮานอย 4 ประเภท) ทุก 15 นาที ช่วง 09:00-16:59 UTC (16:00-23:59 ไทย) ทุกวัน
     - cron: "*/15 9-16 * * *"
+    # ช่วงออกผลหลัก ถี่ขึ้นเป็นทุก 5 นาที: ฮานอย 17:00-18:59 น. ไทย (10-11 UTC) · ลาว 20:00-21:59 น. ไทย (13-14 UTC)
+    - cron: "*/5 10-11 * * *"
+    - cron: "*/5 13-14 * * *"
     # เก็บตก: วันละ 2 ครั้ง กันตกหล่นนอกช่วงข้างต้น (06:05 และ 17:35 UTC)
     - cron: "5 6 * * *"
     - cron: "35 17 * * *"
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "fast = ดึงเฉพาะลาว/ฮานอยจาก API (เร็ว ~30 วิ) · full = ทุกอย่าง"
+        default: "full"
 
 permissions:
-  contents: write
-  pages: write
-  id-token: write
+  contents: read
 
 concurrency:
   group: lottobot
@@ -24,6 +29,11 @@ concurrency:
 jobs:
   update:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      # รอบถี่ช่วงออกผล (ทุก 5 นาที) และรอบที่ถูกสั่งแบบ fast ดึงเฉพาะ API ลาว/ฮานอย เพื่อให้ผลขึ้นเร็ว
+      FAST: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.mode == 'fast') || (github.event_name == 'schedule' && (github.event.schedule == '*/5 10-11 * * *' || github.event.schedule == '*/5 13-14 * * *')) }}
     outputs:
       changed: ${{ steps.commit.outputs.changed }}
     steps:
@@ -31,18 +41,21 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Fetch results
+      - name: Lao + Hanoi (ผลหวย.com API)
+        continue-on-error: true
+        run: python bot.py webapi --out site
+      - name: Fetch results (Thai ฯลฯ)
+        if: env.FAST != 'true'
         continue-on-error: true
         run: python bot.py fetch --out site
         env:
           THAI_FALLBACK_BASE: ${{ vars.THAI_FALLBACK_BASE }}
-      - name: Lao + Hanoi (ผลหวย.com API)
-        continue-on-error: true
-        run: python bot.py webapi --out site
       - name: Hanoi (by date)
+        if: env.FAST != 'true'
         continue-on-error: true
         run: python bot.py backfill hanoi --days 3 --out site
       - name: Lao (by date)
+        if: env.FAST != 'true'
         continue-on-error: true
         run: python bot.py backfill lao --days 3 --out site
       - name: Commit changes
@@ -56,6 +69,7 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             git commit -m "update results"
+            git pull --rebase origin main || true
             git push
             echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
@@ -64,6 +78,10 @@ jobs:
     needs: update
     if: always() && (needs.update.outputs.changed == 'true' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
